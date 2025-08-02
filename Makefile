@@ -1,9 +1,11 @@
 SHELL = /bin/bash -eu -o pipefail
 
 # Image URL to use all building/pushing image targets
-KUBELB_IMG ?= quay.io/kubermatic/kubelb-manager
-KUBELB_CCM_IMG ?= quay.io/kubermatic/kubelb-ccm
-KUBELB_CONNECTION_MANAGER_IMG ?= quay.io/kubermatic/kubelb-connection-manager
+# REGISTRY_PREFIX ?= quay.io/kubermatic
+REGISTRY_PREFIX ?= docker.io/waleed32
+KUBELB_IMG ?= $(REGISTRY_PREFIX)/kubelb-manager
+KUBELB_CCM_IMG ?= $(REGISTRY_PREFIX)/kubelb-ccm
+KUBELB_CONNECTION_MANAGER_IMG ?= $(REGISTRY_PREFIX)/kubelb-connection-manager
 
 ## Tool Versions
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
@@ -55,7 +57,7 @@ SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
 
 .PHONY: all
-all: build-kubelb build-ccm
+all: build-kubelb build-ccm build-connection-manager
 
 ##@ General
 
@@ -131,7 +133,7 @@ test: envtest ## Run tests.
 ##@ Build
 
 .PHONY: build
-build: build-ccm build-kubelb
+build: build-ccm build-kubelb build-connection-manager
 
 build-%: generate fmt vet ## Build manager binary.
 	CGO_ENABLED=0 go build -v -o bin/$* cmd/$*/main.go
@@ -201,8 +203,8 @@ undeploy-%: ## Undeploy controller from the K8s cluster specified in ~/.kube/con
 
 .PHONY: bump
 bump: kustomize
-	cd config/deploy/kubelb && $(KUSTOMIZE) edit set image controller=quay.io/kubermatic/kubelb-manager:$(IMAGE_TAG)
-	cd config/deploy/ccm && $(KUSTOMIZE) edit set image controller=quay.io/kubermatic/kubelb-ccm:$(IMAGE_TAG)
+	cd config/deploy/kubelb && $(KUSTOMIZE) edit set image controller=$(REGISTRY_PREFIX)/kubelb-manager:$(IMAGE_TAG)
+	cd config/deploy/ccm && $(KUSTOMIZE) edit set image controller=$(REGISTRY_PREFIX)/kubelb-ccm:$(IMAGE_TAG)
 
 ##@ Build Dependencies
 

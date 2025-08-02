@@ -13,5 +13,3 @@ __debug*
 charts/*/charts
 .claude
 CLAUDE.md
-kubelb
-connection-manager
