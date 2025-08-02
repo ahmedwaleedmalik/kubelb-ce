@@ -26,6 +26,7 @@ RUN go mod download
 COPY cmd/ cmd/
 COPY api/ api/
 COPY internal/ internal/
+COPY proto/ proto/
 
 RUN CGO_ENABLED=0 go build -a -o kubelb cmd/kubelb/main.go
 
