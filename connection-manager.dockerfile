@@ -30,12 +30,13 @@ COPY proto/ proto/
 
 RUN CGO_ENABLED=0 go build -a -o connection-manager cmd/connection-manager/main.go
 
-FROM gcr.io/distroless/static:nonroot
+FROM docker.io/alpine:3.20
+RUN apk --no-cache add ca-certificates
 WORKDIR /
 COPY --from=builder /workspace/connection-manager .
 USER 65532:65532
 
-# Expose gRPC port only
-EXPOSE 9090
+# Expose both HTTP and gRPC ports
+EXPOSE 8080 9090
 
 ENTRYPOINT ["/connection-manager"]
