@@ -1,0 +1,35 @@
+{{- if and .Values.kubelb.tunnel.enabled .Values.kubelb.tunnel.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "kubelb-manager.fullname" . }}-connection-manager
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "kubelb-manager.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tunnel-connection-manager
+  annotations:
+    # cert-manager annotations for automatic TLS certificate management
+    cert-manager.io/cluster-issuer: {{ .Values.kubelb.tunnel.ingress.certManager.clusterIssuer | quote }}
+    {{- with .Values.kubelb.tunnel.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if .Values.kubelb.tunnel.ingress.className }}
+  ingressClassName: {{ .Values.kubelb.tunnel.ingress.className }}
+  {{- end }}
+  tls:
+  - hosts:
+    - {{ .Values.kubelb.tunnel.ingress.hostname }}
+    secretName: {{ include "kubelb-manager.fullname" . }}-connection-manager-tls
+  rules:
+  - host: {{ .Values.kubelb.tunnel.ingress.hostname }}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: {{ include "kubelb-manager.fullname" . }}-connection-manager
+            port:
+              number: 9090
+{{- end }}

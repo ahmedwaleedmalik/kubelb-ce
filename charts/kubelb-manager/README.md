@@ -51,6 +51,17 @@ helm install kubelb-manager kubelb-manager --namespace kubelb -f values.yaml --c
 | kubelb.propagateAllAnnotations | bool | `false` | Propagate all annotations from the LB resource to the LB service. |
 | kubelb.propagatedAnnotations | object | `{}` | Allowed annotations that will be propagated from the LB resource to the LB service. |
 | kubelb.skipConfigGeneration | bool | `false` | Set to true to skip the generation of the Config CR. Useful when the config CR needs to be managed manually. |
+| kubelb.tunnel | object | `{"connectionManager":{"affinity":{},"grpcAddr":":9090","healthCheck":{"enabled":true,"livenessInitialDelay":30,"readinessInitialDelay":10},"httpAddr":":8080","image":{"pullPolicy":"IfNotPresent","repository":"quay.io/kubermatic/kubelb-connection-manager","tag":"latest"},"ingress":{"annotations":{},"className":"","enabled":false,"hosts":[{"host":"tunnel.example.com","paths":[{"path":"/tunnel.TunnelService","pathType":"Prefix"}]}],"tls":[]},"nodeSelector":{},"podAnnotations":{},"podLabels":{},"podSecurityContext":{"fsGroup":65534,"runAsNonRoot":true,"runAsUser":65534},"replicaCount":1,"requestTimeout":"30s","resources":{"limits":{"cpu":"200m","memory":"128Mi"},"requests":{"cpu":"50m","memory":"64Mi"}},"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65534},"service":{"grpcPort":9090,"httpPort":8080,"type":"ClusterIP"},"tolerations":[]},"enabled":false}` | Tunnel configuration |
+| kubelb.tunnel.connectionManager.grpcAddr | string | `":9090"` | Server addresses |
+| kubelb.tunnel.connectionManager.healthCheck | object | `{"enabled":true,"livenessInitialDelay":30,"readinessInitialDelay":10}` | Health check configuration |
+| kubelb.tunnel.connectionManager.image | object | `{"pullPolicy":"IfNotPresent","repository":"quay.io/kubermatic/kubelb-connection-manager","tag":"latest"}` | Connection manager image configuration |
+| kubelb.tunnel.connectionManager.ingress | object | `{"annotations":{},"className":"","enabled":false,"hosts":[{"host":"tunnel.example.com","paths":[{"path":"/tunnel.TunnelService","pathType":"Prefix"}]}],"tls":[]}` | Ingress configuration for external gRPC access |
+| kubelb.tunnel.connectionManager.podAnnotations | object | `{}` | Pod configuration |
+| kubelb.tunnel.connectionManager.replicaCount | int | `1` | Number of connection manager replicas |
+| kubelb.tunnel.connectionManager.resources | object | `{"limits":{"cpu":"200m","memory":"128Mi"},"requests":{"cpu":"50m","memory":"64Mi"}}` | Resource limits |
+| kubelb.tunnel.connectionManager.securityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65534}` | Security context |
+| kubelb.tunnel.connectionManager.service | object | `{"grpcPort":9090,"httpPort":8080,"type":"ClusterIP"}` | Service configuration |
+| kubelb.tunnel.enabled | bool | `false` | Enable tunnel functionality |
 | nameOverride | string | `""` |  |
 | nodeSelector | object | `{}` |  |
 | podAnnotations | object | `{}` |  |

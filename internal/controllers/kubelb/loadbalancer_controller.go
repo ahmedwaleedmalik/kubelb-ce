@@ -232,7 +232,7 @@ func (r *LoadBalancerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// Check if we need to configure the hostname.
 	var hostname string
-	if kubelb.ShouldConfigureHostname(log, &loadBalancer, tenant, config) {
+	if kubelb.ShouldConfigureHostname(log, loadBalancer.Annotations, loadBalancer.Name, loadBalancer.Spec.Hostname, tenant, config) {
 		var err error
 		hostname, err = r.configureHostname(ctx, &loadBalancer, svcName, tenant, config, annotations)
 		if err != nil {

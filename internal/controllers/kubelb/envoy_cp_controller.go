@@ -81,9 +81,9 @@ func (r *EnvoyCPReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 func (r *EnvoyCPReconciler) reconcile(ctx context.Context, req ctrl.Request) error {
 	snapshotName, appName := envoySnapshotAndAppName(r.EnvoyProxyTopology, req)
 
-	lbs, routes, err := r.ListLoadBalancersAndRoutes(ctx, req)
+	lbs, routes, tunnels, err := r.ListLoadBalancersRoutesAndTunnels(ctx, req)
 	if err != nil {
-		return fmt.Errorf("failed to list LoadBalancers and Routes: %w", err)
+		return fmt.Errorf("failed to list LoadBalancers, Routes, and Tunnels: %w", err)
 	}
 
 	namespace := req.Namespace
@@ -91,7 +91,7 @@ func (r *EnvoyCPReconciler) reconcile(ctx context.Context, req ctrl.Request) err
 		namespace = r.Namespace
 	}
 
-	if len(lbs) == 0 && len(routes) == 0 {
+	if len(lbs) == 0 && len(routes) == 0 && len(tunnels) == 0 {
 		r.EnvoyCache.ClearSnapshot(snapshotName)
 		return r.cleanupEnvoyProxy(ctx, appName, namespace)
 	}
@@ -114,12 +114,12 @@ func (r *EnvoyCPReconciler) reconcile(ctx context.Context, req ctrl.Request) err
 		return err
 	}
 
-	return r.updateCache(ctx, snapshotName, lbs, routes)
+	return r.updateCache(ctx, snapshotName, lbs, routes, tunnels)
 }
 
-func (r *EnvoyCPReconciler) updateCache(ctx context.Context, snapshotName string, lbs []kubelbv1alpha1.LoadBalancer, routes []kubelbv1alpha1.Route) error {
+func (r *EnvoyCPReconciler) updateCache(ctx context.Context, snapshotName string, lbs []kubelbv1alpha1.LoadBalancer, routes []kubelbv1alpha1.Route, tunnels []kubelbv1alpha1.Tunnel) error {
 	log := ctrl.LoggerFrom(ctx)
-	desiredSnapshot, err := envoycp.MapSnapshot(ctx, r.Client, lbs, routes, r.PortAllocator, r.EnvoyProxyTopology == EnvoyProxyTopologyGlobal)
+	desiredSnapshot, err := envoycp.MapSnapshot(ctx, r.Client, lbs, routes, tunnels, r.PortAllocator, r.EnvoyProxyTopology == EnvoyProxyTopologyGlobal)
 	if err != nil {
 		return err
 	}
@@ -150,31 +150,42 @@ func (r *EnvoyCPReconciler) updateCache(ctx context.Context, snapshotName string
 	return nil
 }
 
-func (r *EnvoyCPReconciler) ListLoadBalancersAndRoutes(ctx context.Context, req ctrl.Request) ([]kubelbv1alpha1.LoadBalancer, []kubelbv1alpha1.Route, error) {
+func (r *EnvoyCPReconciler) ListLoadBalancersRoutesAndTunnels(ctx context.Context, req ctrl.Request) ([]kubelbv1alpha1.LoadBalancer, []kubelbv1alpha1.Route, []kubelbv1alpha1.Tunnel, error) {
 	loadBalancers := kubelbv1alpha1.LoadBalancerList{}
 	routes := kubelbv1alpha1.RouteList{}
+	tunnels := kubelbv1alpha1.TunnelList{}
 	var err error
 
 	switch r.EnvoyProxyTopology {
 	case EnvoyProxyTopologyShared, EnvoyProxyTopologyDedicated:
 		err = r.List(ctx, &loadBalancers, ctrlruntimeclient.InNamespace(req.Namespace))
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
 		err = r.List(ctx, &routes, ctrlruntimeclient.InNamespace(req.Namespace))
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
+		}
+
+		err = r.List(ctx, &tunnels, ctrlruntimeclient.InNamespace(req.Namespace))
+		if err != nil {
+			return nil, nil, nil, err
 		}
 	case EnvoyProxyTopologyGlobal:
 		err = r.List(ctx, &loadBalancers)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
 		err = r.List(ctx, &routes)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
+		}
+
+		err = r.List(ctx, &tunnels)
+		if err != nil {
+			return nil, nil, nil, err
 		}
 	}
 
@@ -192,7 +203,14 @@ func (r *EnvoyCPReconciler) ListLoadBalancersAndRoutes(ctx context.Context, req 
 		}
 	}
 
-	return lbs, routeList, nil
+	tunnelList := make([]kubelbv1alpha1.Tunnel, 0, len(tunnels.Items))
+	for _, tunnel := range tunnels.Items {
+		if tunnel.DeletionTimestamp.IsZero() && controllerutil.ContainsFinalizer(&tunnel, CleanupFinalizer) {
+			tunnelList = append(tunnelList, tunnel)
+		}
+	}
+
+	return lbs, routeList, tunnelList, nil
 }
 
 func (r *EnvoyCPReconciler) cleanupEnvoyProxy(ctx context.Context, appName string, namespace string) error {

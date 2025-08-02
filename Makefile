@@ -3,6 +3,7 @@ SHELL = /bin/bash -eu -o pipefail
 # Image URL to use all building/pushing image targets
 KUBELB_IMG ?= quay.io/kubermatic/kubelb-manager
 KUBELB_CCM_IMG ?= quay.io/kubermatic/kubelb-ccm
+KUBELB_CONNECTION_MANAGER_IMG ?= quay.io/kubermatic/kubelb-connection-manager
 
 ## Tool Versions
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
@@ -33,6 +34,7 @@ VERSION = $(shell cat VERSION)
 
 CCM_IMAGE_NAME ?= $(KUBELB_CCM_IMG):$(IMAGE_TAG)
 KUBELB_IMAGE_NAME ?= $(KUBELB_IMG):$(IMAGE_TAG)
+KUBELB_CONNECTION_MANAGER_IMG ?= $(KUBELB_CONNECTION_MANAGER_IMG):$(IMAGE_TAG)
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -87,7 +89,10 @@ manifests: generate controller-gen ## Generate WebhookConfiguration, ClusterRole
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate/boilerplate.go.txt" paths="./..."
 
-update-codegen: generate controller-gen manifests reconciler-gen generate-helm-docs fmt vet go-mod-tidy
+update-codegen: generate controller-gen manifests reconciler-gen update-proto generate-helm-docs fmt vet go-mod-tidy
+
+update-proto:
+	./hack/generate-proto.sh
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.
@@ -146,6 +151,7 @@ download-gocache:
 docker-image:
 	docker build --build-arg GO_VERSION=$(GO_VERSION) -t ${KUBELB_IMAGE_NAME} -f kubelb.dockerfile .
 	docker build --build-arg GO_VERSION=$(GO_VERSION) -t ${CCM_IMAGE_NAME} -f ccm.dockerfile .
+	docker build --build-arg GO_VERSION=$(GO_VERSION) -t ${CONNECTION_MANAGER_IMAGE_NAME} -f connection-manager.dockerfile .
 
 .PHONY: docker-image-publish
 docker-image-publish: docker-image
@@ -153,11 +159,14 @@ docker-image-publish: docker-image
 		docker tag $(KUBELB_IMAGE_NAME) $(KUBELB_IMG):$(GIT_TAG) && \
 		docker tag $(KUBELB_IMAGE_NAME) $(KUBELB_IMG):latest && \
 		docker tag $(CCM_IMAGE_NAME) $(KUBELB_CCM_IMG):$(GIT_TAG) && \
-		docker tag $(CCM_IMAGE_NAME) $(KUBELB_CCM_IMG):latest ;\
+		docker tag $(CCM_IMAGE_NAME) $(KUBELB_CCM_IMG):latest && \
+		docker tag $(CONNECTION_MANAGER_IMAGE_NAME) $(KUBELB_CONNECTION_MANAGER_IMG):$(GIT_TAG) && \
+		docker tag $(CONNECTION_MANAGER_IMAGE_NAME) $(KUBELB_CONNECTION_MANAGER_IMG):latest ;\
 	fi
 
 	docker push $(KUBELB_IMG) --all-tags
 	docker push $(KUBELB_CCM_IMG) --all-tags
+	docker push $(KUBELB_CONNECTION_MANAGER_IMG) --all-tags
 
 ##@ Deployment
 

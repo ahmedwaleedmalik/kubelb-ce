@@ -188,8 +188,8 @@ func GenerateHostname(tenant kubelbiov1alpha1.DNSSettings, config kubelbiov1alph
 }
 
 // ShouldConfigureHostname determines whether hostname configuration should be enabled
-func ShouldConfigureHostname(log logr.Logger, loadBalancer *kubelbiov1alpha1.LoadBalancer, tenant *kubelbiov1alpha1.Tenant, config *kubelbiov1alpha1.Config) bool {
-	if loadBalancer.Spec.Hostname != "" {
+func ShouldConfigureHostname(log logr.Logger, annotations map[string]string, resourceName, hostname string, tenant *kubelbiov1alpha1.Tenant, config *kubelbiov1alpha1.Config) bool {
+	if hostname != "" {
 		// Ensure that explicit hostname is allowed at tenant or global level.
 		if tenant.Spec.DNS.AllowExplicitHostnames != nil && *tenant.Spec.DNS.AllowExplicitHostnames {
 			return true
@@ -198,22 +198,22 @@ func ShouldConfigureHostname(log logr.Logger, loadBalancer *kubelbiov1alpha1.Loa
 			return true
 		}
 		log.V(4).Info("Hostname configuration denied: explicit hostname provided but not allowed",
-			"loadBalancer", loadBalancer.Name,
-			"hostname", loadBalancer.Spec.Hostname,
+			"resourceName", resourceName,
+			"hostname", hostname,
 			"tenantAllowsExplicit", tenant.Spec.DNS.AllowExplicitHostnames,
 			"configAllowsExplicit", config.Spec.DNS.AllowExplicitHostnames)
 		return false
 	}
 
 	// For wildcard domain, we need to check if the annotation to request wildcard domain is set.
-	if val, ok := loadBalancer.Annotations[AnnotationRequestWildcardDomain]; !ok {
+	if val, ok := annotations[AnnotationRequestWildcardDomain]; !ok {
 		log.V(4).Info("Hostname configuration denied: wildcard domain annotation not found",
-			"loadBalancer", loadBalancer.Name,
+			"resourceName", resourceName,
 			"annotation", AnnotationRequestWildcardDomain)
 		return false
 	} else if val != "true" {
 		log.V(4).Info("Hostname configuration denied: wildcard domain annotation not set to 'true'",
-			"loadBalancer", loadBalancer.Name,
+			"resourceName", resourceName,
 			"annotation", AnnotationRequestWildcardDomain,
 			"value", val)
 		return false
@@ -227,7 +227,7 @@ func ShouldConfigureHostname(log logr.Logger, loadBalancer *kubelbiov1alpha1.Loa
 		return true
 	}
 	log.V(4).Info("Hostname configuration denied: no wildcard domain configured",
-		"loadBalancer", loadBalancer.Name,
+		"resourceName", resourceName,
 		"tenantWildcardDomain", tenant.Spec.DNS.WildcardDomain,
 		"configWildcardDomain", config.Spec.DNS.WildcardDomain)
 	return false

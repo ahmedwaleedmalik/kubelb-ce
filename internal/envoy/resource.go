@@ -26,7 +26,9 @@ import (
 	envoyCore "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	envoyEndpoint "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	envoyListener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
+	envoyRoute "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	envoyFileAccessLog "github.com/envoyproxy/go-control-plane/envoy/extensions/access_loggers/file/v3"
+	envoyHttpManager "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	envoyTcpProxy "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/tcp_proxy/v3"
 	envoyUdpProxy "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/udp/udp_proxy/v3"
 	envoytypev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
@@ -57,9 +59,20 @@ const (
 	defaultHealthCheckNoTrafficIntervalSeconds = 5
 )
 
-func MapSnapshot(ctx context.Context, client ctrlclient.Client, loadBalancers []kubelbv1alpha1.LoadBalancer, routes []kubelbv1alpha1.Route, portAllocator *portlookup.PortAllocator, globalEnvoyProxyTopology bool) (*envoycache.Snapshot, error) {
+func MapSnapshot(ctx context.Context, client ctrlclient.Client, loadBalancers []kubelbv1alpha1.LoadBalancer, routes []kubelbv1alpha1.Route, tunnels []kubelbv1alpha1.Tunnel, portAllocator *portlookup.PortAllocator, globalEnvoyProxyTopology bool) (*envoycache.Snapshot, error) {
 	var listener []types.Resource
 	var cluster []types.Resource
+
+	// Check if we need HTTP listeners for tunnel services
+	if len(tunnels) > 0 {
+		// Create HTTP listener for tunnel traffic
+		httpListener := makeHTTPListener("tunnel_http_listener", tunnels, 80)
+		listener = append(listener, httpListener)
+
+		// Create cluster for tunnel connection manager
+		tunnelCluster := makeTunnelCluster("tunnel-connection-manager")
+		cluster = append(cluster, tunnelCluster)
+	}
 
 	addressesMap := make(map[string][]kubelbv1alpha1.EndpointAddress)
 	for _, lb := range loadBalancers {
@@ -333,5 +346,183 @@ func makeUDPListener(clusterName string, listenerName string, listenerPort uint3
 			},
 		},
 		ReusePort: true,
+	}
+}
+
+// makeHTTPListener creates an HTTP listener for tunnel traffic
+func makeHTTPListener(listenerName string, tunnels []kubelbv1alpha1.Tunnel, listenerPort uint32) *envoyListener.Listener {
+	// Create virtual hosts based on tunnel hostnames
+	var virtualHosts []*envoyRoute.VirtualHost
+
+	for _, tunnel := range tunnels {
+		if tunnel.Status.Hostname != "" {
+			// Create a virtual host for each tunnel hostname
+			virtualHost := &envoyRoute.VirtualHost{
+				Name:    fmt.Sprintf("tunnel-%s-%s", tunnel.Namespace, tunnel.Name),
+				Domains: []string{tunnel.Status.Hostname},
+				Routes: []*envoyRoute.Route{
+					{
+						Match: &envoyRoute.RouteMatch{
+							PathSpecifier: &envoyRoute.RouteMatch_Prefix{
+								Prefix: "/",
+							},
+						},
+						Action: &envoyRoute.Route_Route{
+							Route: &envoyRoute.RouteAction{
+								ClusterSpecifier: &envoyRoute.RouteAction_Cluster{
+									Cluster: "tunnel-connection-manager",
+								},
+								// Preserve the original host header for the connection manager
+								HostRewriteSpecifier: &envoyRoute.RouteAction_AutoHostRewrite{
+									AutoHostRewrite: &wrapperspb.BoolValue{Value: false},
+								},
+							},
+						},
+					},
+				},
+			}
+			virtualHosts = append(virtualHosts, virtualHost)
+		}
+	}
+
+	// If no virtual hosts, create a default catch-all
+	if len(virtualHosts) == 0 {
+		virtualHosts = []*envoyRoute.VirtualHost{
+			{
+				Name:    "tunnel-default",
+				Domains: []string{"*"},
+				Routes: []*envoyRoute.Route{
+					{
+						Match: &envoyRoute.RouteMatch{
+							PathSpecifier: &envoyRoute.RouteMatch_Prefix{
+								Prefix: "/",
+							},
+						},
+						Action: &envoyRoute.Route_Route{
+							Route: &envoyRoute.RouteAction{
+								ClusterSpecifier: &envoyRoute.RouteAction_Cluster{
+									Cluster: "tunnel-connection-manager",
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	// Create route configuration
+	routeConfig := &envoyRoute.RouteConfiguration{
+		Name:         listenerName + "_route",
+		VirtualHosts: virtualHosts,
+	}
+
+	// Create router filter - using empty config since we just need the well-known name
+	routerAny := &anypb.Any{}
+
+	// Create access log configuration
+	accessLog := &envoyFileAccessLog.FileAccessLog{
+		Path: "/dev/stdout",
+	}
+	accessLogAny, err := anypb.New(accessLog)
+	if err != nil {
+		panic(err)
+	}
+
+	// Create HTTP connection manager - simplified without transcoding
+	httpConnManager := &envoyHttpManager.HttpConnectionManager{
+		StatPrefix: listenerName,
+		RouteSpecifier: &envoyHttpManager.HttpConnectionManager_RouteConfig{
+			RouteConfig: routeConfig,
+		},
+		HttpFilters: []*envoyHttpManager.HttpFilter{
+			{
+				Name: wellknown.Router,
+				ConfigType: &envoyHttpManager.HttpFilter_TypedConfig{
+					TypedConfig: routerAny,
+				},
+			},
+		},
+		AccessLog: []*envoyAccessLog.AccessLog{
+			{
+				Name: "envoy.access_loggers.file",
+				ConfigType: &envoyAccessLog.AccessLog_TypedConfig{
+					TypedConfig: accessLogAny,
+				},
+			},
+		},
+	}
+
+	httpConnManagerAny, err := anypb.New(httpConnManager)
+	if err != nil {
+		panic(err)
+	}
+
+	return &envoyListener.Listener{
+		Name: listenerName,
+		Address: &envoyCore.Address{
+			Address: &envoyCore.Address_SocketAddress{
+				SocketAddress: &envoyCore.SocketAddress{
+					Protocol: envoyCore.SocketAddress_TCP,
+					Address:  "0.0.0.0",
+					PortSpecifier: &envoyCore.SocketAddress_PortValue{
+						PortValue: listenerPort,
+					},
+				},
+			},
+		},
+		FilterChains: []*envoyListener.FilterChain{
+			{
+				Filters: []*envoyListener.Filter{
+					{
+						Name: wellknown.HTTPConnectionManager,
+						ConfigType: &envoyListener.Filter_TypedConfig{
+							TypedConfig: httpConnManagerAny,
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// makeTunnelCluster creates a cluster for the tunnel connection manager
+func makeTunnelCluster(clusterName string) *envoyCluster.Cluster {
+	// Create endpoint for the tunnel connection manager service
+	// This will point to the connection manager HTTP service for Envoy traffic
+	endpoint := makeEndpoint("tunnel-connection-manager.kubelb-system.svc.cluster.local", 8080)
+
+	return &envoyCluster.Cluster{
+		Name:                 clusterName,
+		ConnectTimeout:       durationpb.New(5 * time.Second),
+		ClusterDiscoveryType: &envoyCluster.Cluster_Type{Type: envoyCluster.Cluster_STRICT_DNS},
+		LbPolicy:             envoyCluster.Cluster_ROUND_ROBIN,
+		LoadAssignment: &envoyEndpoint.ClusterLoadAssignment{
+			ClusterName: clusterName,
+			Endpoints: []*envoyEndpoint.LocalityLbEndpoints{
+				{
+					LbEndpoints: []*envoyEndpoint.LbEndpoint{endpoint},
+				},
+			},
+		},
+		DnsLookupFamily: envoyCluster.Cluster_V4_ONLY,
+		// Use HTTP health checks since we'll implement an HTTP endpoint on the gRPC server
+		HealthChecks: []*envoyCore.HealthCheck{
+			{
+				Timeout:            &durationpb.Duration{Seconds: defaultHealthCheckTimeoutSeconds},
+				Interval:           &durationpb.Duration{Seconds: defaultHealthCheckIntervalSeconds},
+				UnhealthyThreshold: &wrapperspb.UInt32Value{Value: defaultHealthCheckUnhealthyThreshold},
+				HealthyThreshold:   &wrapperspb.UInt32Value{Value: defaultHealthCheckHealthyThreshold},
+				NoTrafficInterval:  &durationpb.Duration{Seconds: defaultHealthCheckNoTrafficIntervalSeconds},
+				HealthChecker: &envoyCore.HealthCheck_HttpHealthCheck_{
+					HttpHealthCheck: &envoyCore.HealthCheck_HttpHealthCheck{
+						Path: "/health",
+					},
+				},
+			},
+		},
+		CommonLbConfig: &envoyCluster.Cluster_CommonLbConfig{
+			HealthyPanicThreshold: &envoytypev3.Percent{Value: 0},
+		},
 	}
 }

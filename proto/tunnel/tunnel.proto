@@ -1,0 +1,107 @@
+/*
+Copyright 2025 The KubeLB Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+syntax = "proto3";
+
+package tunnel;
+
+option go_package = "k8c.io/kubelb/proto/tunnel";
+
+// TunnelService provides bidirectional streaming for tunnel communication
+service TunnelService {
+  // CreateTunnel establishes a bidirectional stream for tunnel communication
+  rpc CreateTunnel(stream TunnelMessage) returns (stream TunnelMessage);
+
+  // ForwardRequest handles incoming HTTP requests from Envoy
+  rpc ForwardRequest(ForwardRequestMessage) returns (ForwardResponseMessage);
+
+  // Health check endpoint
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+// TunnelMessage is the wrapper for all tunnel communication
+message TunnelMessage {
+  oneof payload {
+    TunnelAuth auth = 1;
+    HttpRequest request = 2;
+    HttpResponse response = 3;
+    TunnelControl control = 4;
+    TunnelError error = 5;
+  }
+}
+
+// TunnelAuth is sent by the client to authenticate the tunnel
+message TunnelAuth {
+  string token = 1;         // Authentication token
+  string hostname = 2;      // Hostname to tunnel (e.g., app1.wmx.dev)
+  string target_port = 3;   // Local port to forward to
+}
+
+// HttpRequest represents an incoming HTTP request to be forwarded
+message HttpRequest {
+  string request_id = 1;                // Unique request identifier
+  string method = 2;                    // HTTP method
+  string path = 3;                      // Request path
+  map<string, string> headers = 4;      // HTTP headers
+  bytes body = 5;                       // Request body
+}
+
+// HttpResponse represents the response from the local service
+message HttpResponse {
+  string request_id = 1;                // Matches the request ID
+  int32 status_code = 2;                // HTTP status code
+  map<string, string> headers = 3;      // Response headers
+  bytes body = 4;                       // Response body
+}
+
+// TunnelControl handles control messages like ping/pong
+message TunnelControl {
+  enum Type {
+    PING = 0;
+    PONG = 1;
+    DISCONNECT = 2;
+  }
+  Type type = 1;
+  string message = 2;
+}
+
+// TunnelError represents an error in tunnel communication
+message TunnelError {
+  string request_id = 1;    // Request ID if applicable
+  string error_message = 2; // Error description
+  int32 error_code = 3;     // Error code
+}
+
+// HealthRequest is empty
+message HealthRequest {}
+
+// HealthResponse indicates service health
+message HealthResponse {
+  bool healthy = 1;
+  string message = 2;
+}
+
+// ForwardRequestMessage is sent by Envoy to forward an HTTP request
+message ForwardRequestMessage {
+  string tunnel_host = 1;      // Target tunnel hostname (e.g., app1.wmx.dev)
+  string tunnel_token = 2;     // Authentication token
+  HttpRequest request = 3;     // The HTTP request to forward
+}
+
+// ForwardResponseMessage contains the response from the tunnel
+message ForwardResponseMessage {
+  HttpResponse response = 1;   // The HTTP response from the tunnel
+}
