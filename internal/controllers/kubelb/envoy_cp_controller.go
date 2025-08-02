@@ -81,7 +81,7 @@ func (r *EnvoyCPReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 func (r *EnvoyCPReconciler) reconcile(ctx context.Context, req ctrl.Request) error {
 	snapshotName, appName := envoySnapshotAndAppName(r.EnvoyProxyTopology, req)
 
-	lbs, routes, tunnels, err := r.ListLoadBalancersRoutesAndTunnels(ctx, req)
+	lbs, routes, tunnels, err := r.ListResources(ctx, req)
 	if err != nil {
 		return fmt.Errorf("failed to list LoadBalancers, Routes, and Tunnels: %w", err)
 	}
@@ -150,14 +150,14 @@ func (r *EnvoyCPReconciler) updateCache(ctx context.Context, snapshotName string
 	return nil
 }
 
-func (r *EnvoyCPReconciler) ListLoadBalancersRoutesAndTunnels(ctx context.Context, req ctrl.Request) ([]kubelbv1alpha1.LoadBalancer, []kubelbv1alpha1.Route, []kubelbv1alpha1.Tunnel, error) {
+func (r *EnvoyCPReconciler) ListResources(ctx context.Context, req ctrl.Request) ([]kubelbv1alpha1.LoadBalancer, []kubelbv1alpha1.Route, []kubelbv1alpha1.Tunnel, error) {
 	loadBalancers := kubelbv1alpha1.LoadBalancerList{}
 	routes := kubelbv1alpha1.RouteList{}
 	tunnels := kubelbv1alpha1.TunnelList{}
 	var err error
 
 	switch r.EnvoyProxyTopology {
-	case EnvoyProxyTopologyShared, EnvoyProxyTopologyDedicated:
+	case EnvoyProxyTopologyShared:
 		err = r.List(ctx, &loadBalancers, ctrlruntimeclient.InNamespace(req.Namespace))
 		if err != nil {
 			return nil, nil, nil, err
@@ -360,7 +360,7 @@ func (r *EnvoyCPReconciler) getEnvoyProxyPodSpec(namespace, appName, snapshotNam
 
 func envoySnapshotAndAppName(topology EnvoyProxyTopology, req ctrl.Request) (string, string) {
 	switch topology {
-	case EnvoyProxyTopologyShared, EnvoyProxyTopologyDedicated:
+	case EnvoyProxyTopologyShared:
 		return req.Namespace, req.Namespace
 	case EnvoyProxyTopologyGlobal:
 		return EnvoyGlobalCache, EnvoyGlobalCache
@@ -403,6 +403,10 @@ func (r *EnvoyCPReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 		).
 		Watches(
 			&kubelbv1alpha1.Addresses{},
+			handler.EnqueueRequestsFromMapFunc(r.enqueueLoadBalancers()),
+		).
+		Watches(
+			&kubelbv1alpha1.Tunnel{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueLoadBalancers()),
 		).
 		Complete(r)

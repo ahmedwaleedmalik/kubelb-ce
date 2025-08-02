@@ -490,7 +490,7 @@ func makeHTTPListener(listenerName string, tunnels []kubelbv1alpha1.Tunnel, list
 func makeTunnelCluster(clusterName string) *envoyCluster.Cluster {
 	// Create endpoint for the tunnel connection manager service
 	// This will point to the connection manager HTTP service for Envoy traffic
-	endpoint := makeEndpoint("tunnel-connection-manager.kubelb-system.svc.cluster.local", 8080)
+	endpoint := makeEndpoint("tunnel-connection-manager.kubelb.svc.cluster.local", 8080)
 
 	return &envoyCluster.Cluster{
 		Name:                 clusterName,

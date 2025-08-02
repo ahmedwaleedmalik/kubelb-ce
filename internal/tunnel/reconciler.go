@@ -24,6 +24,7 @@ import (
 
 	kubelbv1alpha1 "k8c.io/kubelb/api/ce/kubelb.k8c.io/v1alpha1"
 	kubelb_internal "k8c.io/kubelb/internal/kubelb"
+	"k8c.io/kubelb/internal/resources"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -43,7 +44,6 @@ import (
 const (
 	TunnelServiceName   = "tunnel-connection-manager"
 	TunnelServicePort   = 8080
-	TunnelGatewayName   = "tunnel-gateway"
 	TunnelOwnerLabel    = "kubelb.k8c.io/tunnel-owner"
 	TunnelHostnameLabel = "kubelb.k8c.io/tunnel-hostname"
 	TunnelSecretLabel   = "kubelb.k8c.io/tunnel-secret"
@@ -81,7 +81,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, log logr.Logger, tunnel *kub
 	if hostname == "" {
 		// No need for an error here since we can still manage the tunnel and skip the hostname configuration.
 		log.V(2).Info("no hostname configurable, skipping")
-		return "", nil, fmt.Errorf("no hostname configurable")
+		return "", nil, fmt.Errorf("no hostname configurable for the tunnel")
 	}
 
 	// Create service that points to Envoy for this tenant (shared across all tunnels in tenant)
@@ -91,21 +91,23 @@ func (r *Reconciler) Reconcile(ctx context.Context, log logr.Logger, tunnel *kub
 		return "", nil, fmt.Errorf("failed to ensure tunnel service: %w", err)
 	}
 
-	// Certificate generation removed - using token-based authentication only
-
 	// Create ingress or gateway based on configuration
 	var (
 		routeRef *corev1.ObjectReference
 		err      error
 	)
-	if r.disableGatewayAPI || config.Spec.GatewayAPI.Disable {
+	// Determine whether to use Ingress or Gateway API based on configuration
+	// Use Gateway API only if it's not disabled and a class is specified
+	useGatewayAPI := !tenant.Spec.GatewayAPI.Disable && !config.Spec.GatewayAPI.Disable &&
+		(tenant.Spec.GatewayAPI.Class != nil || config.Spec.GatewayAPI.Class != nil)
+
+	if !useGatewayAPI {
 		routeRef, err = r.createOrUpdateIngress(ctx, tunnel, hostname, svcName, config, tenant, annotations)
 	} else {
-		routeRef, err = r.createOrUpdateHTTPRoute(ctx, tunnel, hostname, svcName, tenant, annotations)
+		routeRef, err = r.createOrUpdateHTTPRoute(ctx, tunnel, hostname, svcName, tenant, config, annotations)
 	}
-
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to create/update route: %w", err)
+		return "", nil, fmt.Errorf("failed to create/update route for tunnel %s: %w", tunnel.Name, err)
 	}
 
 	return hostname, routeRef, nil
@@ -275,15 +277,20 @@ func (r *Reconciler) createOrUpdateIngress(ctx context.Context, tunnel *kubelbv1
 	}
 
 	_, err := controllerutil.CreateOrUpdate(ctx, r.client, ingress, func() error {
-		// Set labels
 		if ingress.Labels == nil {
 			ingress.Labels = make(map[string]string)
 		}
 		ingress.Labels[TunnelOwnerLabel] = tunnel.Name
 		ingress.Labels[TunnelHostnameLabel] = hostname
-
-		// Set annotations using PropagateAnnotations
 		ingress.Annotations = kubelb_internal.PropagateAnnotations(tunnel.Annotations, annotations, kubelbv1alpha1.AnnotatedResourceIngress)
+
+		if tenant.Spec.Certificates.DefaultClusterIssuer != nil {
+			ingress.Annotations[resources.CertManagerClusterIssuerAnnotation] = *tenant.Spec.Certificates.DefaultClusterIssuer
+		} else if config.Spec.Certificates.DefaultClusterIssuer != nil {
+			ingress.Annotations[resources.CertManagerClusterIssuerAnnotation] = *config.Spec.Certificates.DefaultClusterIssuer
+		}
+		ingress.Annotations[resources.ExternalDNSHostnameAnnotation] = hostname
+		ingress.Annotations[resources.ExternalDNSTTLAnnotation] = resources.ExternalDNSTTLDefault
 
 		// Set ingress class if specified
 		if config.Spec.Ingress.Class != nil {
@@ -291,16 +298,12 @@ func (r *Reconciler) createOrUpdateIngress(ctx context.Context, tunnel *kubelbv1
 		} else if tenant.Spec.Ingress.Class != nil {
 			ingress.Spec.IngressClassName = ptr.To(*tenant.Spec.Ingress.Class)
 		}
-
-		// Always configure TLS for security
 		ingress.Spec.TLS = []networkingv1.IngressTLS{
 			{
 				Hosts:      []string{hostname},
 				SecretName: fmt.Sprintf("tunnel-%s-tls", tunnel.Name),
 			},
 		}
-
-		// Configure rules
 		pathType := networkingv1.PathTypePrefix
 		ingress.Spec.Rules = []networkingv1.IngressRule{
 			{
@@ -325,7 +328,6 @@ func (r *Reconciler) createOrUpdateIngress(ctx context.Context, tunnel *kubelbv1
 				},
 			},
 		}
-
 		// Set owner reference
 		return controllerutil.SetControllerReference(tunnel, ingress, r.scheme)
 	})
@@ -343,7 +345,7 @@ func (r *Reconciler) createOrUpdateIngress(ctx context.Context, tunnel *kubelbv1
 	}, nil
 }
 
-func (r *Reconciler) createOrUpdateHTTPRoute(ctx context.Context, tunnel *kubelbv1alpha1.Tunnel, hostname, serviceName string, _ *kubelbv1alpha1.Tenant, annotations kubelbv1alpha1.AnnotationSettings) (*corev1.ObjectReference, error) {
+func (r *Reconciler) createOrUpdateHTTPRoute(ctx context.Context, tunnel *kubelbv1alpha1.Tunnel, hostname, serviceName string, tenant *kubelbv1alpha1.Tenant, config *kubelbv1alpha1.Config, annotations kubelbv1alpha1.AnnotationSettings) (*corev1.ObjectReference, error) {
 	httpRouteName := fmt.Sprintf("tunnel-%s", tunnel.Name)
 
 	httpRoute := &gwapiv1.HTTPRoute{
@@ -354,31 +356,42 @@ func (r *Reconciler) createOrUpdateHTTPRoute(ctx context.Context, tunnel *kubelb
 	}
 
 	_, err := controllerutil.CreateOrUpdate(ctx, r.client, httpRoute, func() error {
-		// Set labels
 		if httpRoute.Labels == nil {
 			httpRoute.Labels = make(map[string]string)
 		}
 		httpRoute.Labels[TunnelOwnerLabel] = tunnel.Name
 		httpRoute.Labels[TunnelHostnameLabel] = hostname
-
-		// Set annotations using PropagateAnnotations
 		httpRoute.Annotations = kubelb_internal.PropagateAnnotations(tunnel.Annotations, annotations, kubelbv1alpha1.AnnotatedResourceHTTPRoute)
 
-		// Configure parent refs (gateway)
-		namespace := gwapiv1.Namespace(tunnel.Namespace)
+		// Add cert-manager and external-dns annotations for automated DNS and TLS
+		if tenant.Spec.Certificates.DefaultClusterIssuer != nil {
+			httpRoute.Annotations[resources.CertManagerClusterIssuerAnnotation] = *tenant.Spec.Certificates.DefaultClusterIssuer
+		} else if config.Spec.Certificates.DefaultClusterIssuer != nil {
+			httpRoute.Annotations[resources.CertManagerClusterIssuerAnnotation] = *config.Spec.Certificates.DefaultClusterIssuer
+		}
+		httpRoute.Annotations[resources.ExternalDNSHostnameAnnotation] = hostname
+		httpRoute.Annotations[resources.ExternalDNSTTLAnnotation] = resources.ExternalDNSTTLDefault
+
+		var parentGateway gwapiv1.ParentReference
+		if tenant.Spec.GatewayAPI.DefaultGateway != nil {
+			parentGateway = gwapiv1.ParentReference{
+				Name:      gwapiv1.ObjectName(tenant.Spec.GatewayAPI.DefaultGateway.Name),
+				Namespace: ptr.To(gwapiv1.Namespace(tenant.Spec.GatewayAPI.DefaultGateway.Namespace)),
+			}
+		} else if config.Spec.GatewayAPI.DefaultGateway != nil {
+			parentGateway = gwapiv1.ParentReference{
+				Name:      gwapiv1.ObjectName(config.Spec.GatewayAPI.DefaultGateway.Name),
+				Namespace: ptr.To(gwapiv1.Namespace(config.Spec.GatewayAPI.DefaultGateway.Namespace)),
+			}
+		}
 		httpRoute.Spec.ParentRefs = []gwapiv1.ParentReference{
-			{
-				Name:      TunnelGatewayName,
-				Namespace: &namespace,
-			},
+			parentGateway,
 		}
 
-		// Configure hostnames
 		httpRoute.Spec.Hostnames = []gwapiv1.Hostname{
 			gwapiv1.Hostname(hostname),
 		}
 
-		// Configure rules
 		pathType := gwapiv1.PathMatchPathPrefix
 		httpRoute.Spec.Rules = []gwapiv1.HTTPRouteRule{
 			{
@@ -402,7 +415,6 @@ func (r *Reconciler) createOrUpdateHTTPRoute(ctx context.Context, tunnel *kubelb
 				},
 			},
 		}
-
 		// Set owner reference
 		return controllerutil.SetControllerReference(tunnel, httpRoute, r.scheme)
 	})

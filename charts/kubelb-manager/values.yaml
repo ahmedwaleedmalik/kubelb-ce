@@ -57,7 +57,8 @@ kubelb:
           - host: tunnel.example.com
             paths:
               - path: /tunnel.TunnelService
-                pathType: Prefix
+                # Note: pathType must be ImplementationSpecific for gRPC paths
+                pathType: ImplementationSpecific
         tls:
           []
           # - secretName: tunnel-tls

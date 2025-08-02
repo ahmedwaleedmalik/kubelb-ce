@@ -1,4 +1,4 @@
-{{- if and .Values.kubelb.tunnel.enabled .Values.kubelb.tunnel.ingress.enabled }}
+{{- if and .Values.kubelb.tunnel.enabled .Values.kubelb.tunnel.connectionManager.ingress.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -7,29 +7,31 @@ metadata:
   labels:
     {{- include "kubelb-manager.labels" . | nindent 4 }}
     app.kubernetes.io/component: tunnel-connection-manager
+  {{- with .Values.kubelb.tunnel.connectionManager.ingress.annotations }}
   annotations:
-    # cert-manager annotations for automatic TLS certificate management
-    cert-manager.io/cluster-issuer: {{ .Values.kubelb.tunnel.ingress.certManager.clusterIssuer | quote }}
-    {{- with .Values.kubelb.tunnel.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
-    {{- end }}
-spec:
-  {{- if .Values.kubelb.tunnel.ingress.className }}
-  ingressClassName: {{ .Values.kubelb.tunnel.ingress.className }}
   {{- end }}
+spec:
+  {{- if .Values.kubelb.tunnel.connectionManager.ingress.className }}
+  ingressClassName: {{ .Values.kubelb.tunnel.connectionManager.ingress.className }}
+  {{- end }}
+  {{- if .Values.kubelb.tunnel.connectionManager.ingress.tls }}
   tls:
-  - hosts:
-    - {{ .Values.kubelb.tunnel.ingress.hostname }}
-    secretName: {{ include "kubelb-manager.fullname" . }}-connection-manager-tls
+    {{- toYaml .Values.kubelb.tunnel.connectionManager.ingress.tls | nindent 2 }}
+  {{- end }}
   rules:
-  - host: {{ .Values.kubelb.tunnel.ingress.hostname }}
+  {{- range .Values.kubelb.tunnel.connectionManager.ingress.hosts }}
+  - host: {{ .host }}
     http:
       paths:
-      - path: /
-        pathType: Prefix
+      {{- range .paths }}
+      - path: {{ .path }}
+        pathType: {{ .pathType }}
         backend:
           service:
-            name: {{ include "kubelb-manager.fullname" . }}-connection-manager
+            name: {{ include "kubelb-manager.fullname" $ }}-connection-manager
             port:
-              number: 9090
+              number: {{ $.Values.kubelb.tunnel.connectionManager.service.grpcPort }}
+      {{- end }}
+  {{- end }}
 {{- end }}
