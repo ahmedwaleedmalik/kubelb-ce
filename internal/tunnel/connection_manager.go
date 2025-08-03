@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/grpc/keepalive"
 
 	pb "k8c.io/kubelb/proto/tunnel"
@@ -121,8 +122,11 @@ func (cm *ConnectionManager) startGRPCServer(ctx context.Context) error {
 		grpc.MaxSendMsgSize(64 * 1024 * 1024), // 64MB max send message size
 	}
 
+	// Register gzip compressor (it's registered by default, but being explicit)
+	// This enables automatic compression negotiation with clients
+
 	// Create gRPC server without TLS (TLS handled by ingress)
-	log.Info("Starting gRPC server with plain connections (TLS handled by ingress)")
+	log.Info("Starting gRPC server with plain connections (TLS handled by ingress) and gzip compression")
 	cm.grpcServer = grpc.NewServer(opts...)
 
 	// Register tunnel service with generated registration
@@ -274,9 +278,25 @@ func (cm *ConnectionManager) handleTunnelRequest(w http.ResponseWriter, r *http.
 	}
 	defer r.Body.Close()
 
+	// Hop-by-hop headers that should not be forwarded
+	hopByHopHeaders := map[string]bool{
+		"Connection":          true,
+		"Keep-Alive":          true,
+		"Proxy-Authenticate":  true,
+		"Proxy-Authorization": true,
+		"Te":                  true,
+		"Trailers":            true,
+		"Transfer-Encoding":   true,
+		"Upgrade":             true,
+	}
+
 	// Convert headers to map - preserve all values by joining with comma
 	headers = make(map[string]string)
 	for key, values := range r.Header {
+		// Skip hop-by-hop headers
+		if hopByHopHeaders[key] {
+			continue
+		}
 		if len(values) > 0 {
 			// Join multiple values with comma (standard HTTP header behavior)
 			headers[key] = strings.Join(values, ", ")
@@ -298,6 +318,23 @@ func (cm *ConnectionManager) handleTunnelRequest(w http.ResponseWriter, r *http.
 	}
 	if contentLength := r.Header.Get("Content-Length"); contentLength != "" {
 		headers["Content-Length"] = contentLength
+	}
+
+	// Preserve caching headers for better performance
+	cachingHeaders := []string{
+		"Cache-Control",
+		"ETag",
+		"Last-Modified",
+		"If-None-Match",
+		"If-Modified-Since",
+		"Expires",
+		"Vary",
+		"Age",
+	}
+	for _, h := range cachingHeaders {
+		if value := r.Header.Get(h); value != "" {
+			headers[h] = value
+		}
 	}
 
 	// Create forward request message

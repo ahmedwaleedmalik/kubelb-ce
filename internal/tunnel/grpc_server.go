@@ -123,6 +123,19 @@ func (s *ServiceServer) CreateTunnel(stream grpc.BidiStreamingServer[pb.TunnelMe
 
 			authenticated = true
 			log.Info("Tunnel authenticated", "hostname", hostname, "targetPort", auth.TargetPort)
+			
+			// Send acknowledgment back to client
+			ackMsg := &pb.TunnelMessage{
+				Payload: &pb.TunnelMessage_Control{
+					Control: &pb.TunnelControl{
+						Type:    pb.TunnelControl_PONG,
+						Message: "auth-ack",
+					},
+				},
+			}
+			if err := stream.Send(ackMsg); err != nil {
+				log.Error(err, "Failed to send auth acknowledgment", "hostname", hostname)
+			}
 
 		case *pb.TunnelMessage_Response:
 			if !authenticated {
