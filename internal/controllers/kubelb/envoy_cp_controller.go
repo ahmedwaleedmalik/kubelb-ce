@@ -404,10 +404,12 @@ func (r *EnvoyCPReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 		Watches(
 			&kubelbv1alpha1.Addresses{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueLoadBalancers()),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		Watches(
 			&kubelbv1alpha1.Tunnel{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueLoadBalancers()),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		Complete(r)
 }

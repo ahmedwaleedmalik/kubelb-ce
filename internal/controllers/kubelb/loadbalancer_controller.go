@@ -386,14 +386,22 @@ func (r *LoadBalancerReconciler) updateLoadBalancerStatus(ctx context.Context, l
 		LoadBalancer: service.Status.LoadBalancer,
 	}
 
-	// Add hostname status if hostname is configured
+	// Add hostname status if hostname is configured and not already set
 	if hostname != "" {
+		// Only assign hostname if it's not already set in status
+		var hostnameToUse string
+		if loadBalancer.Status.Hostname != nil && loadBalancer.Status.Hostname.Hostname != "" {
+			hostnameToUse = loadBalancer.Status.Hostname.Hostname
+		} else {
+			hostnameToUse = hostname
+		}
+
 		// Perform actual health checks for DNS and TLS
-		dnsReady := r.checkDNSResolution(hostname)
-		tlsReady := r.checkTLSHealth(fmt.Sprintf("https://%s", hostname))
+		dnsReady := r.checkDNSResolution(hostnameToUse)
+		tlsReady := r.checkTLSHealth(fmt.Sprintf("https://%s", hostnameToUse))
 
 		updatedLoadBalancerStatus.Hostname = &kubelbv1alpha1.HostnameStatus{
-			Hostname:         hostname,
+			Hostname:         hostnameToUse,
 			TLSEnabled:       tlsReady, // Actually check if TLS endpoint is working
 			DNSRecordCreated: dnsReady, // Actually check if DNS resolves
 		}

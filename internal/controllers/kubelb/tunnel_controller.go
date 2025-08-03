@@ -169,9 +169,11 @@ func (r *TunnelReconciler) reconcile(ctx context.Context, log logr.Logger, tunne
 		return ctrl.Result{}, fmt.Errorf("failed to reconcile tunnel: %w", err)
 	}
 
-	// Update status with the results
-	tunnelObj.Status.Hostname = hostname
-	tunnelObj.Status.URL = fmt.Sprintf("https://%s", hostname)
+	// Update status with the results - only set hostname if it's empty
+	if tunnelObj.Status.Hostname == "" {
+		tunnelObj.Status.Hostname = hostname
+	}
+	tunnelObj.Status.URL = fmt.Sprintf("https://%s", tunnelObj.Status.Hostname)
 	tunnelObj.Status.ConnectionManagerURL = config.Spec.Tunnel.ConnectionManagerURL
 	tunnelObj.Status.Resources.RouteRef = routeRef
 	tunnelObj.Status.Resources.ServiceName = fmt.Sprintf("tunnel-envoy-%s", tunnelObj.Namespace)
