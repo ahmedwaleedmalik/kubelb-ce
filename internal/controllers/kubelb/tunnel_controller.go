@@ -19,14 +19,9 @@ package kubelb
 import (
 	"context"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/base64"
-	"encoding/pem"
 	"fmt"
-	"math/big"
 	"net"
 	"net/http"
 	"time"
@@ -156,7 +151,7 @@ func (r *TunnelReconciler) reconcile(ctx context.Context, log logr.Logger, tunne
 		}
 	}
 
-	// Create or update SyncSecret with certificate and token
+	// Create or update SyncSecret with token
 	if err := r.ensureTunnelAuth(ctx, log, tunnelObj); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to ensure tunnel authentication: %w", err)
 	}
@@ -294,107 +289,7 @@ func generateToken() (string, error) {
 	return token, nil
 }
 
-// generateTunnelCertificate generates a client certificate for the tunnel
-func generateTunnelCertificate(tunnelName, namespace string, validityDays int, caCert *x509.Certificate, caKey *rsa.PrivateKey) ([]byte, []byte, error) {
-	// Generate private key for the client certificate
-	clientKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to generate client private key: %w", err)
-	}
-
-	// Create certificate template
-	template := x509.Certificate{
-		SerialNumber: big.NewInt(time.Now().UnixNano()),
-		Subject: pkix.Name{
-			CommonName: fmt.Sprintf("tunnel-%s-%s", tunnelName, namespace),
-		},
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().Add(time.Duration(validityDays) * 24 * time.Hour),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		BasicConstraintsValid: true,
-	}
-
-	// Add custom extensions for tunnel identification
-	template.ExtraExtensions = []pkix.Extension{
-		{
-			Id:    []int{1, 3, 6, 1, 4, 1, 99999, 1}, // Custom OID for tunnel name
-			Value: []byte(tunnelName),
-		},
-		{
-			Id:    []int{1, 3, 6, 1, 4, 1, 99999, 2}, // Custom OID for namespace
-			Value: []byte(namespace),
-		},
-	}
-
-	// Create the certificate
-	certDER, err := x509.CreateCertificate(rand.Reader, &template, caCert, &clientKey.PublicKey, caKey)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create certificate: %w", err)
-	}
-
-	// Encode certificate to PEM
-	certPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: certDER,
-	})
-
-	// Encode private key to PEM
-	keyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(clientKey),
-	})
-
-	return certPEM, keyPEM, nil
-}
-
-// getCACertificateAndKey retrieves the CA certificate and private key
-// For now, this is a placeholder - in production this would load from a Secret
-func getCACertificateAndKey() (*x509.Certificate, *rsa.PrivateKey, error) {
-	// TODO: Load CA cert and key from Kubernetes Secret
-	// For now, generate a self-signed CA (development only)
-	return generateCACertificate()
-}
-
-// generateCACertificate generates a self-signed CA certificate (for development)
-func generateCACertificate() (*x509.Certificate, *rsa.PrivateKey, error) {
-	// Generate CA private key
-	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to generate CA private key: %w", err)
-	}
-
-	// Create CA certificate template
-	template := x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject: pkix.Name{
-			CommonName:   "KubeLB Tunnel CA",
-			Organization: []string{"KubeLB"},
-			Country:      []string{"US"},
-		},
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().Add(365 * 24 * time.Hour), // 1 year
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-	}
-
-	// Create the CA certificate
-	caCertDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &caKey.PublicKey, caKey)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create CA certificate: %w", err)
-	}
-
-	// Parse the certificate
-	caCert, err := x509.ParseCertificate(caCertDER)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to parse CA certificate: %w", err)
-	}
-
-	return caCert, caKey, nil
-}
-
-// ensureTunnelAuth creates or updates the SyncSecret with certificate and token for the tunnel
+// ensureTunnelAuth creates or updates the SyncSecret with token for the tunnel
 func (r *TunnelReconciler) ensureTunnelAuth(ctx context.Context, log logr.Logger, tunnel *kubelbv1alpha1.Tunnel) error {
 	syncSecretName := fmt.Sprintf("tunnel-auth-%s", tunnel.Name)
 
@@ -437,15 +332,6 @@ func (r *TunnelReconciler) ensureTunnelAuth(ctx context.Context, log logr.Logger
 		return fmt.Errorf("failed to set owner reference: %w", err)
 	}
 
-	// Check if certificate needs generation/renewal
-	if needsUpdate || r.needsCertificateRenewal(syncSecret) {
-		if err := r.generateAndStoreCertificate(syncSecret, tunnel); err != nil {
-			return fmt.Errorf("failed to generate certificate: %w", err)
-		}
-		needsUpdate = true
-		log.V(2).Info("Generated new certificate for tunnel")
-	}
-
 	// Check if token needs generation/renewal
 	if needsUpdate || r.needsTokenRenewal(syncSecret) {
 		if err := r.generateAndStoreToken(syncSecret); err != nil {
@@ -471,38 +357,6 @@ func (r *TunnelReconciler) ensureTunnelAuth(ctx context.Context, log logr.Logger
 	return nil
 }
 
-// generateAndStoreCertificate generates a new certificate and stores it in the SyncSecret
-func (r *TunnelReconciler) generateAndStoreCertificate(syncSecret *kubelbv1alpha1.SyncSecret, tunnel *kubelbv1alpha1.Tunnel) error {
-	// Get CA certificate and key
-	caCert, caKey, err := getCACertificateAndKey()
-	if err != nil {
-		return fmt.Errorf("failed to get CA certificate: %w", err)
-	}
-
-	// Generate client certificate (30 days validity)
-	certPEM, keyPEM, err := generateTunnelCertificate(tunnel.Name, tunnel.Namespace, 30, caCert, caKey)
-	if err != nil {
-		return fmt.Errorf("failed to generate tunnel certificate: %w", err)
-	}
-
-	// Encode CA certificate to PEM
-	caCertPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: caCert.Raw,
-	})
-
-	// Store in SyncSecret
-	syncSecret.Data["tls.crt"] = certPEM
-	syncSecret.Data["tls.key"] = keyPEM
-	syncSecret.Data["ca.crt"] = caCertPEM
-
-	// Store certificate expiry for renewal tracking
-	certExpiry := time.Now().Add(30 * 24 * time.Hour)
-	syncSecret.Data["certExpiry"] = []byte(certExpiry.Format(time.RFC3339))
-
-	return nil
-}
-
 // generateAndStoreToken generates a new token and stores it in the SyncSecret
 func (r *TunnelReconciler) generateAndStoreToken(syncSecret *kubelbv1alpha1.SyncSecret) error {
 	// Generate token (24 hours validity)
@@ -519,22 +373,6 @@ func (r *TunnelReconciler) generateAndStoreToken(syncSecret *kubelbv1alpha1.Sync
 	syncSecret.Data["tokenExpiry"] = []byte(tokenExpiry.Format(time.RFC3339))
 
 	return nil
-}
-
-// needsCertificateRenewal checks if the certificate needs renewal (7 days before expiry)
-func (r *TunnelReconciler) needsCertificateRenewal(syncSecret *kubelbv1alpha1.SyncSecret) bool {
-	expiryData, exists := syncSecret.Data["certExpiry"]
-	if !exists {
-		return true // No expiry data, needs renewal
-	}
-
-	expiry, err := time.Parse(time.RFC3339, string(expiryData))
-	if err != nil {
-		return true // Invalid expiry data, needs renewal
-	}
-
-	// Renew 7 days before expiry
-	return time.Until(expiry) < 7*24*time.Hour
 }
 
 // needsTokenRenewal checks if the token needs renewal (1 hour before expiry)
