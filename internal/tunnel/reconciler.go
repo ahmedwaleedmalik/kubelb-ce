@@ -131,8 +131,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, log logr.Logger, tunnel *kub
 
 	// Create service that points to Envoy for this tenant (shared across all tunnels in tenant)
 	svcName := fmt.Sprintf("tunnel-envoy-%s", tunnel.Namespace)
-	appName := r.getEnvoyAppName(tunnel.Namespace, config)
-	if err := r.ensureTunnelService(ctx, log, tunnel, svcName, appName, tenant, annotations); err != nil {
+	// NOTE: We only support shared topology for tunneling and global topology is not supported yet.
+	appName := tunnel.Namespace
+	if err := r.ensureTunnelService(ctx, log, tunnel, svcName, appName, annotations); err != nil {
 		return nil, fmt.Errorf("failed to ensure tunnel service: %w", err)
 	}
 
@@ -228,16 +229,7 @@ func (r *Reconciler) Cleanup(ctx context.Context, tunnel *kubelbv1alpha1.Tunnel)
 	return nil
 }
 
-func (r *Reconciler) getEnvoyAppName(namespace string, config *kubelbv1alpha1.Config) string {
-	// For global topology, use global app name
-	if config.Spec.EnvoyProxy.Topology == kubelbv1alpha1.EnvoyProxyTopologyGlobal {
-		return "envoy-global"
-	}
-	// For shared/dedicated topology, use namespace-specific app name
-	return fmt.Sprintf("envoy-%s", namespace)
-}
-
-func (r *Reconciler) ensureTunnelService(ctx context.Context, log logr.Logger, tunnel *kubelbv1alpha1.Tunnel, svcName, appName string, _ *kubelbv1alpha1.Tenant, annotations kubelbv1alpha1.AnnotationSettings) error {
+func (r *Reconciler) ensureTunnelService(ctx context.Context, log logr.Logger, tunnel *kubelbv1alpha1.Tunnel, svcName, appName string, annotations kubelbv1alpha1.AnnotationSettings) error {
 	log.V(2).Info("ensuring tunnel service", "service", svcName)
 
 	// Create labels for tenant-wide tunnel service
