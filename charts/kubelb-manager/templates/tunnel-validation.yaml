@@ -27,13 +27,6 @@ Validation for tunnel configuration domains to prevent deployment with placehold
   {{- end -}}
 {{- end -}}
 
-{{- /* Validate TLS certificate domain */ -}}
-{{- if .Values.kubelb.tunnel.connectionManager.tls.enabled -}}
-  {{- if contains "${DOMAIN}" .Values.kubelb.tunnel.connectionManager.tls.domain -}}
-    {{- fail "ERROR: TLS certificate domain contains placeholder '${DOMAIN}'. Please set a valid domain in .Values.kubelb.tunnel.connectionManager.tls.domain" -}}
-  {{- end -}}
-{{- end -}}
-
 {{- /* Validate external-dns annotations */ -}}
 {{- if .Values.kubelb.tunnel.connectionManager.ingress.enabled -}}
   {{- $hostname := index .Values.kubelb.tunnel.connectionManager.ingress.annotations "external-dns.alpha.kubernetes.io/hostname" -}}
