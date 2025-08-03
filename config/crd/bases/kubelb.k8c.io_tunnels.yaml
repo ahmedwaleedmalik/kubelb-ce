@@ -186,6 +186,9 @@ spec:
                       this tunnel
                     type: string
                 type: object
+              token:
+                description: Token contains the authentication token for this tunnel
+                type: string
               url:
                 description: URL contains the full URL to access the tunnel
                 type: string

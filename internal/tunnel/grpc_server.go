@@ -30,8 +30,10 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "k8c.io/kubelb/proto/tunnel"
+	kubelbv1alpha1 "k8c.io/kubelb/api/ce/kubelb.k8c.io/v1alpha1"
 
 	"k8s.io/klog/v2"
+	ctrlruntimeclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // Default timeout for forwarded requests
@@ -43,16 +45,18 @@ type ServiceServer struct {
 	registry         *Registry
 	responseChannels sync.Map // map[requestID]chan *pb.HttpResponse
 	requestTimeout   time.Duration
+	kubeClient       ctrlruntimeclient.Client
 }
 
 // NewServiceServer creates a new tunnel service server
-func NewServiceServer(registry *Registry, requestTimeout time.Duration) *ServiceServer {
+func NewServiceServer(registry *Registry, requestTimeout time.Duration, kubeClient ctrlruntimeclient.Client) *ServiceServer {
 	if requestTimeout == 0 {
 		requestTimeout = defaultRequestTimeout
 	}
 	return &ServiceServer{
 		registry:       registry,
 		requestTimeout: requestTimeout,
+		kubeClient:     kubeClient,
 	}
 }
 
@@ -93,6 +97,12 @@ func (s *ServiceServer) CreateTunnel(stream grpc.BidiStreamingServer[pb.TunnelMe
 
 			auth := payload.Auth
 			hostname = auth.Hostname
+
+			// Validate token against Kubernetes
+			if err := s.validateTunnelToken(stream.Context(), hostname, auth.Token); err != nil {
+				log.Error(err, "Token validation failed", "hostname", hostname)
+				return status.Errorf(codes.Unauthenticated, "invalid tunnel token: %v", err)
+			}
 
 			// Register tunnel
 			if err := s.registry.RegisterTunnel(hostname, stream, auth.Token, auth.TargetPort); err != nil {
@@ -280,4 +290,30 @@ func (s *ServiceServer) handleControl(stream grpc.BidiStreamingServer[pb.TunnelM
 		// Ignore other control messages
 		return nil
 	}
+}
+
+// validateTunnelToken validates the provided token against the tunnel resource in Kubernetes
+func (s *ServiceServer) validateTunnelToken(ctx context.Context, hostname, providedToken string) error {
+	// Find all tunnels to match by hostname
+	var tunnelList kubelbv1alpha1.TunnelList
+	if err := s.kubeClient.List(ctx, &tunnelList); err != nil {
+		return fmt.Errorf("failed to list tunnels: %w", err)
+	}
+
+	// Find tunnel with matching hostname
+	for _, tunnel := range tunnelList.Items {
+		if tunnel.Status.Hostname == hostname {
+			// Check if the provided token matches the expected token
+			if tunnel.Status.Token == "" {
+				return fmt.Errorf("tunnel %s/%s has no token configured", tunnel.Namespace, tunnel.Name)
+			}
+			if tunnel.Status.Token != providedToken {
+				return fmt.Errorf("invalid token for tunnel %s/%s", tunnel.Namespace, tunnel.Name)
+			}
+			// Token is valid
+			return nil
+		}
+	}
+
+	return fmt.Errorf("no tunnel found for hostname: %s", hostname)
 }

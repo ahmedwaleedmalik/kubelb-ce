@@ -18,6 +18,8 @@ package kubelb
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 
 	"github.com/go-logr/logr"
@@ -40,6 +42,7 @@ import (
 
 const (
 	TunnelControllerName = "tunnel-controller"
+	TokenLength          = 32 // 32 bytes = 256 bits of entropy
 )
 
 // TunnelReconciler reconciles a Tunnel Object
@@ -142,6 +145,16 @@ func (r *TunnelReconciler) reconcile(ctx context.Context, log logr.Logger, tunne
 		}
 	}
 
+	// Generate token if not already set
+	if tunnelObj.Status.Token == "" {
+		token, err := generateToken()
+		if err != nil {
+			return fmt.Errorf("failed to generate token: %w", err)
+		}
+		tunnelObj.Status.Token = token
+		log.V(2).Info("Generated new token for tunnel")
+	}
+
 	// Get annotations from tenant and config
 	annotations := GetAnnotations(tenant, config)
 
@@ -221,6 +234,22 @@ func (r *TunnelReconciler) updateStatus(ctx context.Context, tunnel *kubelbv1alp
 	}
 
 	return r.Status().Update(ctx, tunnel)
+}
+
+// generateToken generates a cryptographically secure random token
+func generateToken() (string, error) {
+	// Create a byte slice to hold the random data
+	tokenBytes := make([]byte, TokenLength)
+	
+	// Read random bytes
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return "", fmt.Errorf("failed to generate random token: %w", err)
+	}
+	
+	// Encode to base64 for a URL-safe string
+	token := base64.URLEncoding.EncodeToString(tokenBytes)
+	
+	return token, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

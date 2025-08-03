@@ -31,6 +31,7 @@ import (
 	pb "k8c.io/kubelb/proto/tunnel"
 
 	"k8s.io/klog/v2"
+	ctrlruntimeclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // ConnectionManager manages tunnel connections and provides gRPC service
@@ -39,6 +40,7 @@ type ConnectionManager struct {
 	grpcAddr       string
 	httpAddr       string
 	requestTimeout time.Duration
+	kubeClient     ctrlruntimeclient.Client
 
 	// Core components
 	registry      *Registry
@@ -54,6 +56,7 @@ type ConnectionManagerConfig struct {
 	GRPCAddr       string
 	HTTPAddr       string
 	RequestTimeout time.Duration
+	KubeClient     ctrlruntimeclient.Client
 }
 
 // NewConnectionManager creates a new connection manager
@@ -61,13 +64,14 @@ func NewConnectionManager(config *ConnectionManagerConfig) (*ConnectionManager, 
 	// Create registry
 	registry := NewRegistry()
 
-	// Create tunnel service with timeout
-	tunnelService := NewServiceServer(registry, config.RequestTimeout)
+	// Create tunnel service with timeout and Kubernetes client
+	tunnelService := NewServiceServer(registry, config.RequestTimeout, config.KubeClient)
 
 	return &ConnectionManager{
 		grpcAddr:       config.GRPCAddr,
 		httpAddr:       config.HTTPAddr,
 		requestTimeout: config.RequestTimeout,
+		kubeClient:     config.KubeClient,
 		registry:       registry,
 		tunnelService:  tunnelService,
 	}, nil
@@ -211,16 +215,22 @@ func (cm *ConnectionManager) startHTTPServer(ctx context.Context) error {
 
 // handleTunnelRequest handles incoming HTTP requests and forwards them through tunnels
 func (cm *ConnectionManager) handleTunnelRequest(w http.ResponseWriter, r *http.Request) {
-	// Extract host from request
-	host := r.Host
+	// Extract host from x-tunnel-host header first (from Envoy), fallback to Host header
+	host := r.Header.Get("X-Tunnel-Host")
 	if host == "" {
-		host = r.Header.Get("Host")
+		host = r.Host
+		if host == "" {
+			host = r.Header.Get("Host")
+		}
 	}
 
 	// Remove port if present
 	if colonIndex := strings.Index(host, ":"); colonIndex > 0 {
 		host = host[:colonIndex]
 	}
+
+	// Extract tunnel token from x-tunnel-token header (from Envoy)
+	tunnelToken := r.Header.Get("X-Tunnel-Token")
 
 	log := klog.FromContext(r.Context()).WithValues("host", host, "method", r.Method, "path", r.URL.Path)
 
@@ -229,6 +239,13 @@ func (cm *ConnectionManager) handleTunnelRequest(w http.ResponseWriter, r *http.
 	if !exists {
 		log.V(2).Info("No tunnel found for host")
 		http.Error(w, "Tunnel not found", http.StatusNotFound)
+		return
+	}
+
+	// Validate tunnel token if provided
+	if tunnelToken != "" && tunnelToken != conn.Token {
+		log.V(2).Info("Invalid tunnel token")
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -247,6 +264,14 @@ func (cm *ConnectionManager) handleTunnelRequest(w http.ResponseWriter, r *http.
 		if len(values) > 0 {
 			headers[key] = values[0] // Take first value for simplicity
 		}
+	}
+
+	// Ensure X-Forwarded headers are included
+	if xForwardedFor := r.Header.Get("X-Forwarded-For"); xForwardedFor != "" {
+		headers["X-Forwarded-For"] = xForwardedFor
+	}
+	if xForwardedProto := r.Header.Get("X-Forwarded-Proto"); xForwardedProto != "" {
+		headers["X-Forwarded-Proto"] = xForwardedProto
 	}
 
 	// Create forward request message

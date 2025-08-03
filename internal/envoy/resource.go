@@ -380,6 +380,61 @@ func makeHTTPListener(listenerName string, tunnels []kubelbv1alpha1.Tunnel, list
 								},
 							},
 						},
+						// Add request headers for tunnel processing
+						RequestHeadersToAdd: []*envoyCore.HeaderValueOption{
+							{
+								Header: &envoyCore.HeaderValue{
+									Key:   "x-tunnel-host",
+									Value: "%REQ(:authority)%",
+								},
+								AppendAction: envoyCore.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
+							},
+							{
+								Header: &envoyCore.HeaderValue{
+									Key:   "x-tunnel-token",
+									Value: "%REQ(authorization)%",
+								},
+								AppendAction: envoyCore.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
+							},
+							{
+								Header: &envoyCore.HeaderValue{
+									Key:   "x-forwarded-for",
+									Value: "%DOWNSTREAM_REMOTE_ADDRESS%",
+								},
+								AppendAction: envoyCore.HeaderValueOption_APPEND_IF_EXISTS_OR_ADD,
+							},
+							{
+								Header: &envoyCore.HeaderValue{
+									Key:   "x-forwarded-proto",
+									Value: "https",
+								},
+								AppendAction: envoyCore.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
+							},
+						},
+						// Add security headers to responses
+						ResponseHeadersToAdd: []*envoyCore.HeaderValueOption{
+							{
+								Header: &envoyCore.HeaderValue{
+									Key:   "strict-transport-security",
+									Value: "max-age=31536000; includeSubDomains",
+								},
+								AppendAction: envoyCore.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
+							},
+							{
+								Header: &envoyCore.HeaderValue{
+									Key:   "x-content-type-options",
+									Value: "nosniff",
+								},
+								AppendAction: envoyCore.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
+							},
+							{
+								Header: &envoyCore.HeaderValue{
+									Key:   "x-frame-options",
+									Value: "DENY",
+								},
+								AppendAction: envoyCore.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
+							},
+						},
 					},
 				},
 			}

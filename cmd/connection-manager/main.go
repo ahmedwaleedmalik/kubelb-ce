@@ -26,7 +26,12 @@ import (
 
 	"k8c.io/kubelb/internal/tunnel"
 
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/klog/v2"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	kubelbv1alpha1 "k8c.io/kubelb/api/ce/kubelb.k8c.io/v1alpha1"
 )
 
 func main() {
@@ -42,11 +47,28 @@ func main() {
 	ctx := context.Background()
 	log := klog.FromContext(ctx)
 
+	// Initialize scheme
+	if err := kubelbv1alpha1.AddToScheme(scheme.Scheme); err != nil {
+		log.Error(err, "Failed to add kubelb scheme")
+		os.Exit(1)
+	}
+
+	// Create Kubernetes client
+	kubeConfig := ctrl.GetConfigOrDie()
+	kubeClient, err := client.New(kubeConfig, client.Options{
+		Scheme: scheme.Scheme,
+	})
+	if err != nil {
+		log.Error(err, "Failed to create Kubernetes client")
+		os.Exit(1)
+	}
+
 	// Create simplified configuration - no TLS, token-based authentication only
 	config := &tunnel.ConnectionManagerConfig{
 		GRPCAddr:       *grpcAddr,
 		HTTPAddr:       *httpAddr,
 		RequestTimeout: *requestTimeout,
+		KubeClient:     kubeClient,
 	}
 
 	// Create connection manager
