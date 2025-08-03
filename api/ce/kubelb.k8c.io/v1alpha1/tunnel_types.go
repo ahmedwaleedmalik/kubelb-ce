@@ -42,10 +42,6 @@ type TunnelStatus struct {
 	// +optional
 	ConnectionManagerURL string `json:"connectionManagerURL,omitempty"`
 
-	// Token contains the authentication token for this tunnel
-	// +optional
-	Token string `json:"token,omitempty"`
-
 	// Phase represents the current phase of the tunnel
 	// +optional
 	Phase TunnelPhase `json:"phase,omitempty"`

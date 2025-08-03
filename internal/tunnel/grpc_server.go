@@ -322,11 +322,22 @@ func (s *ServiceServer) validateTunnelToken(ctx context.Context, hostname, provi
 	// Find tunnel with matching hostname
 	for _, tunnel := range tunnelList.Items {
 		if tunnel.Status.Hostname == hostname {
-			// Check if the provided token matches the expected token
-			if tunnel.Status.Token == "" {
-				return fmt.Errorf("tunnel %s/%s has no token configured", tunnel.Namespace, tunnel.Name)
+			// Get the SyncSecret that contains the token
+			syncSecretName := fmt.Sprintf("tunnel-auth-%s", tunnel.Name)
+			var syncSecret kubelbv1alpha1.SyncSecret
+			if err := s.kubeClient.Get(ctx, ctrlruntimeclient.ObjectKey{
+				Namespace: tunnel.Namespace,
+				Name:      syncSecretName,
+			}, &syncSecret); err != nil {
+				return fmt.Errorf("failed to get SyncSecret %s/%s: %w", tunnel.Namespace, syncSecretName, err)
 			}
-			if tunnel.Status.Token != providedToken {
+
+			// Check if the provided token matches the expected token from SyncSecret
+			expectedToken, exists := syncSecret.Data["token"]
+			if !exists || len(expectedToken) == 0 {
+				return fmt.Errorf("tunnel %s/%s has no token configured in SyncSecret", tunnel.Namespace, tunnel.Name)
+			}
+			if string(expectedToken) != providedToken {
 				return fmt.Errorf("invalid token for tunnel %s/%s", tunnel.Namespace, tunnel.Name)
 			}
 			// Token is valid
