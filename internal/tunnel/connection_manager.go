@@ -274,20 +274,30 @@ func (cm *ConnectionManager) handleTunnelRequest(w http.ResponseWriter, r *http.
 	}
 	defer r.Body.Close()
 
-	// Convert headers to map
+	// Convert headers to map - preserve all values by joining with comma
 	headers = make(map[string]string)
 	for key, values := range r.Header {
 		if len(values) > 0 {
-			headers[key] = values[0] // Take first value for simplicity
+			// Join multiple values with comma (standard HTTP header behavior)
+			headers[key] = strings.Join(values, ", ")
 		}
 	}
 
-	// Ensure X-Forwarded headers are included
+	// Ensure X-Forwarded headers are included (they should already be in headers map)
+	// But explicitly set them to ensure they're not lost
 	if xForwardedFor := r.Header.Get("X-Forwarded-For"); xForwardedFor != "" {
 		headers["X-Forwarded-For"] = xForwardedFor
 	}
 	if xForwardedProto := r.Header.Get("X-Forwarded-Proto"); xForwardedProto != "" {
 		headers["X-Forwarded-Proto"] = xForwardedProto
+	}
+
+	// Ensure critical headers for proper content handling
+	if contentType := r.Header.Get("Content-Type"); contentType != "" {
+		headers["Content-Type"] = contentType
+	}
+	if contentLength := r.Header.Get("Content-Length"); contentLength != "" {
+		headers["Content-Length"] = contentLength
 	}
 
 	// Create forward request message
