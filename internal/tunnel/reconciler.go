@@ -35,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	ctrlruntimeclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -112,7 +113,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, log logr.Logger, tunnel *kub
 		oldStatus.Resources.ClientTLSSecretName != tunnel.Status.Resources.ClientTLSSecretName
 
 	if statusChanged {
-		if err := r.client.Status().Update(ctx, tunnel); err != nil {
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			// Re-fetch the latest version of the tunnel before updating
+			latestTunnel := &kubelbv1alpha1.Tunnel{}
+			if err := r.client.Get(ctx, ctrlruntimeclient.ObjectKey{Name: tunnel.Name, Namespace: tunnel.Namespace}, latestTunnel); err != nil {
+				return err
+			}
+			
+			// Apply our changes to the latest version
+			latestTunnel.Status.Hostname = tunnel.Status.Hostname
+			latestTunnel.Status.URL = tunnel.Status.URL
+			latestTunnel.Status.ConnectionManagerURL = tunnel.Status.ConnectionManagerURL
+			latestTunnel.Status.Resources.ServiceName = tunnel.Status.Resources.ServiceName
+			latestTunnel.Status.Resources.ServerTLSSecretName = tunnel.Status.Resources.ServerTLSSecretName
+			latestTunnel.Status.Resources.ClientTLSSecretName = tunnel.Status.Resources.ClientTLSSecretName
+			
+			return r.client.Status().Update(ctx, latestTunnel)
+		})
+		if err != nil {
 			return nil, fmt.Errorf("failed to update tunnel status: %w", err)
 		}
 	}

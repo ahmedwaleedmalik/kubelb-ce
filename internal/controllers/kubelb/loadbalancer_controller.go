@@ -330,7 +330,6 @@ func (r *LoadBalancerReconciler) configureHostname(ctx context.Context, loadBala
 	// Use existing hostname from status if available, otherwise generate/use spec hostname
 	var hostname string
 	if loadBalancer.Status.Hostname != nil && loadBalancer.Status.Hostname.Hostname != "" {
-		// Use existing hostname from status
 		hostname = loadBalancer.Status.Hostname.Hostname
 	} else {
 		// Generate new hostname or use spec hostname
@@ -346,15 +345,10 @@ func (r *LoadBalancerReconciler) configureHostname(ctx context.Context, loadBala
 			return "", nil
 		}
 
-		// Check if we need to update status before modifying it
 		needsUpdate := loadBalancer.Status.Hostname == nil || loadBalancer.Status.Hostname.Hostname != hostname
-
-		// Persist hostname immediately to prevent regeneration
 		loadBalancer.Status.Hostname = &kubelbv1alpha1.HostnameStatus{
 			Hostname: hostname,
 		}
-
-		// Only update status if hostname actually changed
 		if needsUpdate {
 			if err := r.Status().Update(ctx, loadBalancer); err != nil {
 				return "", fmt.Errorf("failed to update LoadBalancer status: %w", err)
@@ -702,38 +696,47 @@ func (r *LoadBalancerReconciler) checkDNSResolution(hostname string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := net.DefaultResolver.LookupIPAddr(ctx, hostname)
-	return err == nil
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, hostname)
+	if err != nil {
+		ctrl.LoggerFrom(ctx).V(2).Info("DNS resolution failed", "hostname", hostname, "error", err)
+		return false
+	}
+	ctrl.LoggerFrom(ctx).V(3).Info("DNS resolution successful", "hostname", hostname, "ips", ips)
+	return true
 }
 
-// checkTLSHealth checks if the TLS endpoint has a valid certificate and TLS connection works
+// checkTLSHealth checks if the TLS endpoint has a working TLS connection
 func (r *LoadBalancerReconciler) checkTLSHealth(url string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Create HTTP client with timeout but NO TLS verification skip - we want to verify the cert
+	// Create HTTP client with timeout - skip cert verification to handle self-signed certs
+	// We're checking if TLS handshake works, not certificate validity
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: false, // Verify TLS certificate for this check
+				InsecureSkipVerify: true, // Skip cert verification to handle self-signed certificates
 			},
 		},
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
+		ctrl.LoggerFrom(ctx).V(2).Info("TLS health check failed - request creation", "url", url, "error", err)
 		return false
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		// TLS errors (cert validation failure, handshake issues, etc.) will cause this to fail
+		// TLS handshake or connection errors will cause this to fail
+		ctrl.LoggerFrom(ctx).V(2).Info("TLS health check failed - request execution", "url", url, "error", err)
 		return false
 	}
 	defer resp.Body.Close()
 
-	// If we get here, TLS handshake succeeded and certificate is valid
+	// If we get here, TLS handshake succeeded (even with self-signed cert)
 	// Any HTTP response code means TLS is working
+	ctrl.LoggerFrom(ctx).V(3).Info("TLS health check successful", "url", url, "statusCode", resp.StatusCode)
 	return true
 }

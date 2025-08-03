@@ -42,6 +42,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	ctrlruntimeclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -228,12 +229,7 @@ func (r *TunnelReconciler) cleanup(ctx context.Context, log logr.Logger, tunnelO
 func (r *TunnelReconciler) updateStatus(ctx context.Context, tunnel *kubelbv1alpha1.Tunnel, phase kubelbv1alpha1.TunnelPhase, message string) error {
 	tunnel.Status.Phase = phase
 
-	// Set all existing conditions to False first
-	for i := range tunnel.Status.Conditions {
-		tunnel.Status.Conditions[i].Status = metav1.ConditionFalse
-	}
-
-	// Update conditions
+	// Update conditions - only update the phase condition, preserve others
 	condition := metav1.Condition{
 		Type:               string(phase),
 		Status:             metav1.ConditionTrue,
@@ -242,7 +238,7 @@ func (r *TunnelReconciler) updateStatus(ctx context.Context, tunnel *kubelbv1alp
 		Message:            message,
 	}
 
-	// Replace or add the condition
+	// Replace or add the phase condition without affecting other conditions
 	found := false
 	for i, c := range tunnel.Status.Conditions {
 		if c.Type == condition.Type {
@@ -255,7 +251,19 @@ func (r *TunnelReconciler) updateStatus(ctx context.Context, tunnel *kubelbv1alp
 		tunnel.Status.Conditions = append(tunnel.Status.Conditions, condition)
 	}
 
-	return r.Status().Update(ctx, tunnel)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		// Re-fetch the latest version of the tunnel before updating
+		latestTunnel := &kubelbv1alpha1.Tunnel{}
+		if err := r.Get(ctx, ctrlruntimeclient.ObjectKey{Name: tunnel.Name, Namespace: tunnel.Namespace}, latestTunnel); err != nil {
+			return err
+		}
+
+		// Apply our changes to the latest version
+		latestTunnel.Status.Phase = tunnel.Status.Phase
+		latestTunnel.Status.Conditions = tunnel.Status.Conditions
+
+		return r.Status().Update(ctx, latestTunnel)
+	})
 }
 
 // generateToken generates a cryptographically secure random token
@@ -560,8 +568,13 @@ func (r *TunnelReconciler) checkDNSResolution(hostname string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := net.DefaultResolver.LookupIPAddr(ctx, hostname)
-	return err == nil
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, hostname)
+	if err != nil {
+		r.Log.V(2).Info("DNS resolution failed", "hostname", hostname, "error", err)
+		return false
+	}
+	r.Log.V(3).Info("DNS resolution successful", "hostname", hostname, "ips", ips)
+	return true
 }
 
 // checkEndpointHealth checks if the tunnel endpoint is responding
@@ -581,48 +594,60 @@ func (r *TunnelReconciler) checkEndpointHealth(url string) bool {
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
+		r.Log.V(2).Info("Endpoint health check failed - request creation", "url", url, "error", err)
 		return false
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
+		r.Log.V(2).Info("Endpoint health check failed - request execution", "url", url, "error", err)
 		return false
 	}
 	defer resp.Body.Close()
 
 	// Consider any response (even 404) as healthy since it means the endpoint is responding
-	return resp.StatusCode < 600
+	healthy := resp.StatusCode < 600
+	if healthy {
+		r.Log.V(3).Info("Endpoint health check successful", "url", url, "statusCode", resp.StatusCode)
+	} else {
+		r.Log.V(2).Info("Endpoint health check failed - bad status code", "url", url, "statusCode", resp.StatusCode)
+	}
+	return healthy
 }
 
-// checkTLSHealth checks if the TLS endpoint has a valid certificate and TLS connection works
+// checkTLSHealth checks if the TLS endpoint has a working TLS connection
 func (r *TunnelReconciler) checkTLSHealth(url string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Create HTTP client with timeout but NO TLS verification skip - we want to verify the cert
+	// Create HTTP client with timeout - skip cert verification to handle self-signed certs
+	// We're checking if TLS handshake works, not certificate validity
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: false, // Verify TLS certificate for this check
+				InsecureSkipVerify: true, // Skip cert verification to handle self-signed certificates
 			},
 		},
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
+		r.Log.V(2).Info("TLS health check failed - request creation", "url", url, "error", err)
 		return false
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		// TLS errors (cert validation failure, handshake issues, etc.) will cause this to fail
+		// TLS handshake or connection errors will cause this to fail
+		r.Log.V(2).Info("TLS health check failed - request execution", "url", url, "error", err)
 		return false
 	}
 	defer resp.Body.Close()
 
-	// If we get here, TLS handshake succeeded and certificate is valid
+	// If we get here, TLS handshake succeeded (even with self-signed cert)
 	// Any HTTP response code means TLS is working
+	r.Log.V(3).Info("TLS health check successful", "url", url, "statusCode", resp.StatusCode)
 	return true
 }
 
