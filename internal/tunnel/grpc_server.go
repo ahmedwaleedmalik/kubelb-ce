@@ -123,7 +123,7 @@ func (s *ServiceServer) CreateTunnel(stream grpc.BidiStreamingServer[pb.TunnelMe
 
 			authenticated = true
 			log.Info("Tunnel authenticated", "hostname", hostname, "targetPort", auth.TargetPort)
-			
+
 			// Send acknowledgment back to client
 			ackMsg := &pb.TunnelMessage{
 				Payload: &pb.TunnelMessage_Control{

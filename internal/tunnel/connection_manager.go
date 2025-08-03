@@ -26,7 +26,6 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/grpc/keepalive"
 
 	pb "k8c.io/kubelb/proto/tunnel"
