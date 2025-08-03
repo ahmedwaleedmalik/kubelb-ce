@@ -100,16 +100,26 @@ func (s *ServiceServer) CreateTunnel(stream grpc.BidiStreamingServer[pb.TunnelMe
 
 			// Note: Client certificate validation removed - using token-only authentication
 
+			// Debug: Log authentication attempt
+			log.Info("Tunnel authentication attempt", "hostname", hostname, "targetPort", auth.TargetPort, "hasToken", auth.Token != "")
+
 			// Validate token against Kubernetes (always required)
 			if err := s.validateTunnelToken(stream.Context(), hostname, auth.Token); err != nil {
 				log.Error(err, "Token validation failed", "hostname", hostname)
 				return status.Errorf(codes.Unauthenticated, "invalid tunnel token: %v", err)
 			}
 
+			log.Info("Token validation successful", "hostname", hostname)
+
 			// Register tunnel
 			if err := s.registry.RegisterTunnel(hostname, stream, auth.Token, auth.TargetPort); err != nil {
+				log.Error(err, "Failed to register tunnel", "hostname", hostname)
 				return status.Errorf(codes.Internal, "failed to register tunnel: %v", err)
 			}
+
+			// Debug: Log all active tunnels after registration
+			activeTunnels := s.registry.GetAllTunnels()
+			log.Info("Tunnel registered successfully", "hostname", hostname, "targetPort", auth.TargetPort, "totalActiveTunnels", len(activeTunnels), "allTunnels", activeTunnels)
 
 			authenticated = true
 			log.Info("Tunnel authenticated", "hostname", hostname, "targetPort", auth.TargetPort)

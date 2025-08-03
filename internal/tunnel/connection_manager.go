@@ -211,6 +211,13 @@ func (cm *ConnectionManager) startHTTPServer(ctx context.Context) error {
 
 // handleTunnelRequest handles incoming HTTP requests and forwards them through tunnels
 func (cm *ConnectionManager) handleTunnelRequest(w http.ResponseWriter, r *http.Request) {
+	// Debug: Log all headers
+	headers := make(map[string]string)
+	for key, values := range r.Header {
+		headers[key] = strings.Join(values, ", ")
+	}
+	klog.Info("Incoming request headers", "headers", headers, "method", r.Method, "path", r.URL.Path, "host", r.Host)
+
 	// Extract host from x-tunnel-host header first (from Envoy), fallback to Host header
 	host := r.Header.Get("X-Tunnel-Host")
 	if host == "" {
@@ -220,9 +227,18 @@ func (cm *ConnectionManager) handleTunnelRequest(w http.ResponseWriter, r *http.
 		}
 	}
 
+	// Debug: Log host extraction
+	klog.Info("Host extraction", "x-tunnel-host", r.Header.Get("X-Tunnel-Host"), "r.Host", r.Host, "host-header", r.Header.Get("Host"), "extracted", host)
+
 	// Remove port if present
+	hostBeforePortRemoval := host
 	if colonIndex := strings.Index(host, ":"); colonIndex > 0 {
 		host = host[:colonIndex]
+	}
+
+	// Debug: Log host after port removal
+	if hostBeforePortRemoval != host {
+		klog.Info("Port removed from host", "before", hostBeforePortRemoval, "after", host)
 	}
 
 	// Extract tunnel token from x-tunnel-token header (from Envoy)
@@ -230,10 +246,14 @@ func (cm *ConnectionManager) handleTunnelRequest(w http.ResponseWriter, r *http.
 
 	log := klog.FromContext(r.Context()).WithValues("host", host, "method", r.Method, "path", r.URL.Path)
 
+	// Debug: Log active tunnels before lookup
+	activeTunnels := cm.registry.GetAllTunnels()
+	log.Info("Looking up tunnel", "lookupHost", host, "activeTunnels", activeTunnels, "tunnelCount", len(activeTunnels))
+
 	// Find tunnel for this host
 	conn, exists := cm.registry.GetActiveTunnel(host)
 	if !exists {
-		log.V(2).Info("No tunnel found for host")
+		log.Info("No tunnel found for host", "host", host, "availableTunnels", activeTunnels)
 		http.Error(w, "Tunnel not found", http.StatusNotFound)
 		return
 	}
@@ -255,7 +275,7 @@ func (cm *ConnectionManager) handleTunnelRequest(w http.ResponseWriter, r *http.
 	defer r.Body.Close()
 
 	// Convert headers to map
-	headers := make(map[string]string)
+	headers = make(map[string]string)
 	for key, values := range r.Header {
 		if len(values) > 0 {
 			headers[key] = values[0] // Take first value for simplicity

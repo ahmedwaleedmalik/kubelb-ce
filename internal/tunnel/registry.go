@@ -56,8 +56,12 @@ func (tr *Registry) RegisterTunnel(hostname string, stream grpc.BidiStreamingSer
 	tr.mutex.Lock()
 	defer tr.mutex.Unlock()
 
+	// Debug: Log registration attempt
+	fmt.Printf("[REGISTRY] Registering tunnel: hostname=%q, targetPort=%s, hasToken=%v\n", hostname, targetPort, token != "")
+
 	// Close existing tunnel if any.
 	if existingTunnel, exists := tr.activeTunnels[hostname]; exists {
+		fmt.Printf("[REGISTRY] Closing existing tunnel for hostname %q\n", hostname)
 		existingTunnel.Cancel()
 		delete(tr.activeTunnels, hostname)
 	}
@@ -75,6 +79,13 @@ func (tr *Registry) RegisterTunnel(hostname string, stream grpc.BidiStreamingSer
 		Cancel:     cancel,
 	}
 
+	// Debug: Log successful registration and all active tunnels
+	allTunnels := make([]string, 0, len(tr.activeTunnels))
+	for h := range tr.activeTunnels {
+		allTunnels = append(allTunnels, h)
+	}
+	fmt.Printf("[REGISTRY] Tunnel registered successfully: hostname=%q, totalTunnels=%d, allTunnels=%v\n", hostname, len(tr.activeTunnels), allTunnels)
+
 	return nil
 }
 
@@ -83,7 +94,15 @@ func (tr *Registry) GetActiveTunnel(hostname string) (*Connection, bool) {
 	tr.mutex.RLock()
 	defer tr.mutex.RUnlock()
 
+	// Debug: Log lookup attempt
+	allTunnels := make([]string, 0, len(tr.activeTunnels))
+	for h := range tr.activeTunnels {
+		allTunnels = append(allTunnels, h)
+	}
+
 	tunnel, exists := tr.activeTunnels[hostname]
+	fmt.Printf("[REGISTRY] GetActiveTunnel: hostname=%q, found=%v, totalTunnels=%d, allTunnels=%v\n", hostname, exists, len(tr.activeTunnels), allTunnels)
+
 	return tunnel, exists
 }
 
