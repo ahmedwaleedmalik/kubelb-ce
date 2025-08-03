@@ -66,29 +66,62 @@ func NewReconciler(client ctrlruntimeclient.Client, scheme *runtime.Scheme, reco
 }
 
 // Reconcile reconciles a tunnel object and returns the hostname and route reference
-func (r *Reconciler) Reconcile(ctx context.Context, log logr.Logger, tunnel *kubelbv1alpha1.Tunnel, config *kubelbv1alpha1.Config, tenant *kubelbv1alpha1.Tenant, annotations kubelbv1alpha1.AnnotationSettings) (string, *corev1.ObjectReference, error) {
+func (r *Reconciler) Reconcile(ctx context.Context, log logr.Logger, tunnel *kubelbv1alpha1.Tunnel, config *kubelbv1alpha1.Config, tenant *kubelbv1alpha1.Tenant, annotations kubelbv1alpha1.AnnotationSettings) (*corev1.ObjectReference, error) {
 	// Check if hostname should be configured using the same logic as LoadBalancer
 	if !kubelb_internal.ShouldConfigureHostname(log, tunnel.Annotations, tunnel.Name, tunnel.Spec.Hostname, tenant, config) {
-		return "", nil, fmt.Errorf("no hostname configurable")
+		return nil, fmt.Errorf("no hostname configurable")
 	}
 
 	// Assign a wildcard hostname if the annotation is set and the hostname is empty.
-	hostname := tunnel.Spec.Hostname
+	hostname := tunnel.Status.Hostname
 	if hostname == "" {
-		hostname = kubelb_internal.GenerateHostname(tenant.Spec.DNS, config.Spec.DNS)
+		if tunnel.Spec.Hostname != "" {
+			hostname = tunnel.Spec.Hostname
+		} else {
+			hostname = kubelb_internal.GenerateHostname(tenant.Spec.DNS, config.Spec.DNS)
+		}
 	}
 
 	if hostname == "" {
 		// No need for an error here since we can still manage the tunnel and skip the hostname configuration.
 		log.V(2).Info("no hostname configurable, skipping")
-		return "", nil, fmt.Errorf("no hostname configurable for the tunnel")
+		return nil, fmt.Errorf("no hostname configurable for the tunnel")
+	}
+
+	// Capture old status before any modifications
+	oldStatus := tunnel.Status.DeepCopy()
+
+	// Only set hostname if it's empty (this is the critical change)
+	if tunnel.Status.Hostname == "" {
+		tunnel.Status.Hostname = hostname
+	}
+
+	// Update status fields that should always be current
+	tunnel.Status.URL = fmt.Sprintf("https://%s", tunnel.Status.Hostname)
+	tunnel.Status.ConnectionManagerURL = config.Spec.Tunnel.ConnectionManagerURL
+	tunnel.Status.Resources.ServiceName = fmt.Sprintf("tunnel-envoy-%s", tunnel.Namespace)
+	tunnel.Status.Resources.ServerTLSSecretName = fmt.Sprintf("%s-server-tls", tunnel.Name)
+	tunnel.Status.Resources.ClientTLSSecretName = fmt.Sprintf("%s-client-tls", tunnel.Name)
+
+	// Only update if the fields we're modifying actually changed
+	statusChanged := oldStatus.Hostname != tunnel.Status.Hostname ||
+		oldStatus.URL != tunnel.Status.URL ||
+		oldStatus.ConnectionManagerURL != tunnel.Status.ConnectionManagerURL ||
+		oldStatus.Resources.ServiceName != tunnel.Status.Resources.ServiceName ||
+		oldStatus.Resources.ServerTLSSecretName != tunnel.Status.Resources.ServerTLSSecretName ||
+		oldStatus.Resources.ClientTLSSecretName != tunnel.Status.Resources.ClientTLSSecretName
+
+	if statusChanged {
+		if err := r.client.Status().Update(ctx, tunnel); err != nil {
+			return nil, fmt.Errorf("failed to update tunnel status: %w", err)
+		}
 	}
 
 	// Create service that points to Envoy for this tenant (shared across all tunnels in tenant)
 	svcName := fmt.Sprintf("tunnel-envoy-%s", tunnel.Namespace)
 	appName := r.getEnvoyAppName(tunnel.Namespace, config)
 	if err := r.ensureTunnelService(ctx, log, tunnel, svcName, appName, tenant, annotations); err != nil {
-		return "", nil, fmt.Errorf("failed to ensure tunnel service: %w", err)
+		return nil, fmt.Errorf("failed to ensure tunnel service: %w", err)
 	}
 
 	// Create ingress or gateway based on configuration
@@ -107,10 +140,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, log logr.Logger, tunnel *kub
 		routeRef, err = r.createOrUpdateHTTPRoute(ctx, tunnel, hostname, svcName, tenant, config, annotations)
 	}
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to create/update route for tunnel %s: %w", tunnel.Name, err)
+		return nil, fmt.Errorf("failed to create/update route for tunnel %s: %w", tunnel.Name, err)
 	}
 
-	return hostname, routeRef, nil
+	return routeRef, nil
 }
 
 // Cleanup removes all resources created for the tunnel

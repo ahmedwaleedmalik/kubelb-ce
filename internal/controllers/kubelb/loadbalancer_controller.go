@@ -327,16 +327,40 @@ func (r *LoadBalancerReconciler) configureHostname(ctx context.Context, loadBala
 
 	log.V(2).Info("configure hostname", "name", loadBalancer.Name, "namespace", loadBalancer.Namespace)
 
-	// Assign a wildcard hostname if the annotation is set and the hostname is empty.
-	hostname := loadBalancer.Spec.Hostname
-	if hostname == "" {
-		hostname = kubelb.GenerateHostname(tenant.Spec.DNS, config.Spec.DNS)
-	}
+	// Use existing hostname from status if available, otherwise generate/use spec hostname
+	var hostname string
+	if loadBalancer.Status.Hostname != nil && loadBalancer.Status.Hostname.Hostname != "" {
+		// Use existing hostname from status
+		hostname = loadBalancer.Status.Hostname.Hostname
+	} else {
+		// Generate new hostname or use spec hostname
+		if loadBalancer.Spec.Hostname != "" {
+			hostname = loadBalancer.Spec.Hostname
+		} else {
+			hostname = kubelb.GenerateHostname(tenant.Spec.DNS, config.Spec.DNS)
+		}
 
-	if hostname == "" {
-		// No need for an error here since we can still manage the LB and skip the hostname configuration.
-		log.V(2).Info("no hostname configurable, skipping")
-		return "", nil
+		if hostname == "" {
+			// No need for an error here since we can still manage the LB and skip the hostname configuration.
+			log.V(2).Info("no hostname configurable, skipping")
+			return "", nil
+		}
+
+		// Check if we need to update status before modifying it
+		needsUpdate := loadBalancer.Status.Hostname == nil || loadBalancer.Status.Hostname.Hostname != hostname
+
+		// Persist hostname immediately to prevent regeneration
+		loadBalancer.Status.Hostname = &kubelbv1alpha1.HostnameStatus{
+			Hostname: hostname,
+		}
+
+		// Only update status if hostname actually changed
+		if needsUpdate {
+			if err := r.Status().Update(ctx, loadBalancer); err != nil {
+				return "", fmt.Errorf("failed to update LoadBalancer status: %w", err)
+			}
+			log.V(2).Info("persisted hostname to status", "hostname", hostname)
+		}
 	}
 
 	// Add hostname finalizer if it doesn't exist

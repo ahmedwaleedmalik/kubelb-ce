@@ -37,6 +37,7 @@ import (
 	"k8c.io/kubelb/internal/tunnel"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -164,21 +165,21 @@ func (r *TunnelReconciler) reconcile(ctx context.Context, log logr.Logger, tunne
 
 	// Reconcile the tunnel using the business logic
 	tunnelReconciler := tunnel.NewReconciler(r.Client, r.Scheme, r.Recorder, r.DisableGatewayAPI)
-	hostname, routeRef, err := tunnelReconciler.Reconcile(ctx, log, tunnelObj, config, tenant, annotations)
+	routeRef, err := tunnelReconciler.Reconcile(ctx, log, tunnelObj, config, tenant, annotations)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to reconcile tunnel: %w", err)
 	}
 
-	// Update status with the results - only set hostname if it's empty
-	if tunnelObj.Status.Hostname == "" {
-		tunnelObj.Status.Hostname = hostname
-	}
-	tunnelObj.Status.URL = fmt.Sprintf("https://%s", tunnelObj.Status.Hostname)
-	tunnelObj.Status.ConnectionManagerURL = config.Spec.Tunnel.ConnectionManagerURL
+	// Update routeRef and persist it immediately
+	oldRouteRef := tunnelObj.Status.Resources.RouteRef
 	tunnelObj.Status.Resources.RouteRef = routeRef
-	tunnelObj.Status.Resources.ServiceName = fmt.Sprintf("tunnel-envoy-%s", tunnelObj.Namespace)
-	tunnelObj.Status.Resources.ServerTLSSecretName = fmt.Sprintf("%s-server-tls", tunnelObj.Name)
-	tunnelObj.Status.Resources.ClientTLSSecretName = fmt.Sprintf("%s-client-tls", tunnelObj.Name)
+
+	// Only update status if routeRef actually changed
+	if !equality.Semantic.DeepEqual(oldRouteRef, routeRef) {
+		if err := r.Status().Update(ctx, tunnelObj); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to update tunnel status: %w", err)
+		}
+	}
 
 	// Perform health checks before marking as ready
 	dnsReady, endpointReady, tlsReady := r.updateHealthConditions(log, tunnelObj)
