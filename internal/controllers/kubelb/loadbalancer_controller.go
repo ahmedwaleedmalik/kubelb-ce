@@ -18,8 +18,12 @@ package kubelb
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"net"
+	"net/http"
 	"reflect"
+	"time"
 
 	kubelbv1alpha1 "k8c.io/kubelb/api/ce/kubelb.k8c.io/v1alpha1"
 	utils "k8c.io/kubelb/internal/controllers"
@@ -384,10 +388,14 @@ func (r *LoadBalancerReconciler) updateLoadBalancerStatus(ctx context.Context, l
 
 	// Add hostname status if hostname is configured
 	if hostname != "" {
+		// Perform actual health checks for DNS and TLS
+		dnsReady := r.checkDNSResolution(hostname)
+		tlsReady := r.checkTLSHealth(fmt.Sprintf("https://%s", hostname))
+
 		updatedLoadBalancerStatus.Hostname = &kubelbv1alpha1.HostnameStatus{
 			Hostname:         hostname,
-			TLSEnabled:       true, // Set to true since we're adding TLS configuration
-			DNSRecordCreated: true, // Set to true since we're adding external-dns annotations
+			TLSEnabled:       tlsReady, // Actually check if TLS endpoint is working
+			DNSRecordCreated: dnsReady, // Actually check if DNS resolves
 		}
 	}
 
@@ -655,4 +663,45 @@ func (r *LoadBalancerReconciler) enqueueLoadBalancersForTenant() handler.MapFunc
 
 		return result
 	}
+}
+
+// checkDNSResolution checks if the hostname resolves to an IP address
+func (r *LoadBalancerReconciler) checkDNSResolution(hostname string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := net.DefaultResolver.LookupIPAddr(ctx, hostname)
+	return err == nil
+}
+
+// checkTLSHealth checks if the TLS endpoint has a valid certificate and TLS connection works
+func (r *LoadBalancerReconciler) checkTLSHealth(url string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Create HTTP client with timeout but NO TLS verification skip - we want to verify the cert
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: false, // Verify TLS certificate for this check
+			},
+		},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return false
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		// TLS errors (cert validation failure, handshake issues, etc.) will cause this to fail
+		return false
+	}
+	defer resp.Body.Close()
+
+	// If we get here, TLS handshake succeeded and certificate is valid
+	// Any HTTP response code means TLS is working
+	return true
 }

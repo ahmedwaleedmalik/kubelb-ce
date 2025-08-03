@@ -62,10 +62,10 @@ type ConnectionManagerConfig struct {
 	RequestTimeout time.Duration
 	KubeClient     ctrlruntimeclient.Client
 	// TLS configuration
-	TLSCertFile    string
-	TLSKeyFile     string
-	CACertFile     string
-	EnableMTLS     bool
+	TLSCertFile string
+	TLSKeyFile  string
+	CACertFile  string
+	EnableMTLS  bool
 }
 
 // NewConnectionManager creates a new connection manager
@@ -379,13 +379,13 @@ func (cm *ConnectionManager) createTLSConfig(_ context.Context) (*tls.Config, er
 	if err != nil {
 		return nil, fmt.Errorf("failed to load server certificate: %w", err)
 	}
-	
+
 	// Load CA certificate for client validation
 	caCertPool, err := cm.loadCACertPool()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load CA certificate: %w", err)
 	}
-	
+
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{serverCert},
 		ClientAuth:   tls.RequireAndVerifyClientCert, // Require and verify client certificates
@@ -398,7 +398,7 @@ func (cm *ConnectionManager) createTLSConfig(_ context.Context) (*tls.Config, er
 		},
 		ClientCAs: caCertPool,
 	}
-	
+
 	return tlsConfig, nil
 }
 
@@ -406,7 +406,7 @@ func (cm *ConnectionManager) createTLSConfig(_ context.Context) (*tls.Config, er
 func (cm *ConnectionManager) loadServerCertificate() (tls.Certificate, error) {
 	certPath := "/etc/certs/tls.crt"
 	keyPath := "/etc/certs/tls.key"
-	
+
 	// Check if certificate files exist
 	if _, err := os.Stat(certPath); os.IsNotExist(err) {
 		return tls.Certificate{}, fmt.Errorf("server certificate not found at %s", certPath)
@@ -414,36 +414,36 @@ func (cm *ConnectionManager) loadServerCertificate() (tls.Certificate, error) {
 	if _, err := os.Stat(keyPath); os.IsNotExist(err) {
 		return tls.Certificate{}, fmt.Errorf("server private key not found at %s", keyPath)
 	}
-	
+
 	// Load certificate and private key
 	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
 		return tls.Certificate{}, fmt.Errorf("failed to load server certificate: %w", err)
 	}
-	
+
 	return cert, nil
 }
 
 // loadCACertPool loads the CA certificate pool for client validation
 func (cm *ConnectionManager) loadCACertPool() (*x509.CertPool, error) {
 	caPath := "/etc/certs/ca.crt"
-	
+
 	// Check if CA certificate file exists
 	if _, err := os.Stat(caPath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("CA certificate not found at %s", caPath)
 	}
-	
+
 	// Read CA certificate
 	caCert, err := os.ReadFile(caPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read CA certificate: %w", err)
 	}
-	
+
 	// Create certificate pool and add CA
 	caCertPool := x509.NewCertPool()
 	if !caCertPool.AppendCertsFromPEM(caCert) {
 		return nil, fmt.Errorf("failed to parse CA certificate")
 	}
-	
+
 	return caCertPool, nil
 }

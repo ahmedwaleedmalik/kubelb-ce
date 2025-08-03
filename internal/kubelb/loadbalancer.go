@@ -185,21 +185,21 @@ func GenerateHostname(tenant kubelbiov1alpha1.DNSSettings, config kubelbiov1alph
 	baseDomain = strings.TrimPrefix(baseDomain, "*.")
 	baseDomain = strings.TrimPrefix(baseDomain, "**.")
 	baseDomain = strings.TrimPrefix(baseDomain, "*")
-	
+
 	// Validate base domain first
 	if !isValidHostname(baseDomain) {
 		// Invalid base domain, return empty to indicate error
 		return ""
 	}
-	
+
 	hostname := fmt.Sprintf("%s.%s", randomPrefix, baseDomain)
-	
+
 	// Validate the generated hostname
 	if !isValidHostname(hostname) {
 		// Fallback to a simpler format if validation fails
 		return fmt.Sprintf("lb-%d.%s", metav1.Now().Unix(), baseDomain)
 	}
-	
+
 	return hostname
 }
 
@@ -211,25 +211,25 @@ func isValidHostname(hostname string) bool {
 	// - Labels must start with alphanumeric, can contain hyphens, must end with alphanumeric
 	// - No consecutive dots
 	// - Case insensitive (but we'll generate lowercase)
-	
+
 	if hostname == "" || len(hostname) > 253 {
 		return false
 	}
-	
+
 	// Check for consecutive dots or leading/trailing dots
 	if strings.Contains(hostname, "..") || strings.HasPrefix(hostname, ".") || strings.HasSuffix(hostname, ".") {
 		return false
 	}
-	
+
 	// Validate each label
 	labels := strings.Split(hostname, ".")
 	if len(labels) < 2 { // At least two labels required (subdomain.domain)
 		return false
 	}
-	
+
 	// Regex for valid DNS label: starts with alnum, can contain hyphens, ends with alnum
 	labelRegex := regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
-	
+
 	for _, label := range labels {
 		if label == "" || len(label) > 63 {
 			return false
@@ -238,7 +238,7 @@ func isValidHostname(hostname string) bool {
 			return false
 		}
 	}
-	
+
 	return true
 }
 
