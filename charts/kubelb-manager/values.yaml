@@ -52,6 +52,7 @@ kubelb:
         annotations:
           nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
           external-dns.alpha.kubernetes.io/hostname: connection-manager.${DOMAIN}
+          cert-manager.io/cluster-issuer: "letsencrypt-prod"
         hosts:
           - host: connection-manager.${DOMAIN}
             paths:
@@ -73,13 +74,7 @@ kubelb:
         # -- Annotations for HTTPRoute
         annotations:
           external-dns.alpha.kubernetes.io/hostname: connection-manager.${DOMAIN}
-      # -- TLS configuration for mTLS
-      tls:
-        enabled: false
-        # -- Domain for the server certificate
-        domain: "connection-manager.${DOMAIN}"
-        # -- Certificate issuer name
-        issuer: "letsencrypt-prod"
+          cert-manager.io/cluster-issuer: "letsencrypt-prod"
       # -- Server addresses
       grpcAddr: ":9090"
       httpAddr: ":8080"

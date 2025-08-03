@@ -129,10 +129,6 @@ spec:
                 description: Resources contains references to the resources created
                   for this tunnel
                 properties:
-                  clientTLSSecretName:
-                    description: ClientTLSSecretName is the name of the client TLS
-                      secret for mTLS
-                    type: string
                   routeRef:
                     description: RouteRef is a reference to the route (HTTPRoute or
                       Ingress) created for this tunnel
@@ -177,10 +173,6 @@ spec:
                         type: string
                     type: object
                     x-kubernetes-map-type: atomic
-                  serverTLSSecretName:
-                    description: ServerTLSSecretName is the name of the server TLS
-                      secret for mTLS
-                    type: string
                   serviceName:
                     description: ServiceName is the name of the service created for
                       this tunnel

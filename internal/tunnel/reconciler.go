@@ -101,16 +101,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, log logr.Logger, tunnel *kub
 	tunnel.Status.URL = fmt.Sprintf("https://%s", tunnel.Status.Hostname)
 	tunnel.Status.ConnectionManagerURL = config.Spec.Tunnel.ConnectionManagerURL
 	tunnel.Status.Resources.ServiceName = fmt.Sprintf("tunnel-envoy-%s", tunnel.Namespace)
-	tunnel.Status.Resources.ServerTLSSecretName = fmt.Sprintf("%s-server-tls", tunnel.Name)
-	tunnel.Status.Resources.ClientTLSSecretName = fmt.Sprintf("%s-client-tls", tunnel.Name)
 
 	// Only update if the fields we're modifying actually changed
 	statusChanged := oldStatus.Hostname != tunnel.Status.Hostname ||
 		oldStatus.URL != tunnel.Status.URL ||
 		oldStatus.ConnectionManagerURL != tunnel.Status.ConnectionManagerURL ||
-		oldStatus.Resources.ServiceName != tunnel.Status.Resources.ServiceName ||
-		oldStatus.Resources.ServerTLSSecretName != tunnel.Status.Resources.ServerTLSSecretName ||
-		oldStatus.Resources.ClientTLSSecretName != tunnel.Status.Resources.ClientTLSSecretName
+		oldStatus.Resources.ServiceName != tunnel.Status.Resources.ServiceName
 
 	if statusChanged {
 		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -125,8 +121,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, log logr.Logger, tunnel *kub
 			latestTunnel.Status.URL = tunnel.Status.URL
 			latestTunnel.Status.ConnectionManagerURL = tunnel.Status.ConnectionManagerURL
 			latestTunnel.Status.Resources.ServiceName = tunnel.Status.Resources.ServiceName
-			latestTunnel.Status.Resources.ServerTLSSecretName = tunnel.Status.Resources.ServerTLSSecretName
-			latestTunnel.Status.Resources.ClientTLSSecretName = tunnel.Status.Resources.ClientTLSSecretName
 
 			return r.client.Status().Update(ctx, latestTunnel)
 		})
@@ -231,9 +225,6 @@ func (r *Reconciler) Cleanup(ctx context.Context, tunnel *kubelbv1alpha1.Tunnel)
 			}
 		}
 	}
-
-	// Certificate cleanup removed - no certificates generated
-
 	return nil
 }
 

@@ -43,12 +43,6 @@ spec:
         - --grpc-addr={{ .Values.kubelb.tunnel.connectionManager.grpcAddr }}
         - --http-addr={{ .Values.kubelb.tunnel.connectionManager.httpAddr }}
         - --request-timeout={{ .Values.kubelb.tunnel.connectionManager.requestTimeout }}
-        {{- if .Values.kubelb.tunnel.connectionManager.tls.enabled }}
-        - --tls-cert-file=/etc/certs/tls.crt
-        - --tls-key-file=/etc/certs/tls.key
-        - --ca-cert-file=/etc/certs/ca.crt
-        - --enable-mtls=true
-        {{- end }}
         - --v=2
         ports:
         - name: grpc
@@ -77,12 +71,6 @@ spec:
         {{- end }}
         resources:
           {{- toYaml .Values.kubelb.tunnel.connectionManager.resources | nindent 10 }}
-        {{- if .Values.kubelb.tunnel.connectionManager.tls.enabled }}
-        volumeMounts:
-        - name: server-certs
-          mountPath: /etc/certs
-          readOnly: true
-        {{- end }}
         env:
         - name: POD_NAME
           valueFrom:
@@ -103,13 +91,6 @@ spec:
       {{- with .Values.kubelb.tunnel.connectionManager.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- if .Values.kubelb.tunnel.connectionManager.tls.enabled }}
-      volumes:
-      - name: server-certs
-        secret:
-          secretName: connection-manager-tls
-          defaultMode: 0400
       {{- end }}
       terminationGracePeriodSeconds: 60
 {{- end }}

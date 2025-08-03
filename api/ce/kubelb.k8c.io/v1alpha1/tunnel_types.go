@@ -64,14 +64,6 @@ type TunnelResources struct {
 	// RouteRef is a reference to the route (HTTPRoute or Ingress) created for this tunnel
 	// +optional
 	RouteRef *corev1.ObjectReference `json:"routeRef,omitempty"`
-
-	// ServerTLSSecretName is the name of the server TLS secret for mTLS
-	// +optional
-	ServerTLSSecretName string `json:"serverTLSSecretName,omitempty"`
-
-	// ClientTLSSecretName is the name of the client TLS secret for mTLS
-	// +optional
-	ClientTLSSecretName string `json:"clientTLSSecretName,omitempty"`
 }
 
 // TunnelPhase represents the phase of tunnel

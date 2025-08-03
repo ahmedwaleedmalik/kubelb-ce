@@ -18,19 +18,15 @@ package tunnel
 
 import (
 	"context"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	kubelbv1alpha1 "k8c.io/kubelb/api/ce/kubelb.k8c.io/v1alpha1"
@@ -102,20 +98,7 @@ func (s *ServiceServer) CreateTunnel(stream grpc.BidiStreamingServer[pb.TunnelMe
 			auth := payload.Auth
 			hostname = auth.Hostname
 
-			// Extract and validate client certificate when TLS is enabled
-			clientCert, err := s.extractClientCertificate(stream.Context())
-			if err != nil {
-				// If we can't extract certificate, it might be because TLS is not enabled
-				// Log as debug rather than error to avoid noise in non-TLS environments
-				log.V(4).Info("Could not extract client certificate", "error", err)
-			} else {
-				// We have a certificate, so validate it
-				if err := s.validateClientCertificate(clientCert, hostname); err != nil {
-					log.Error(err, "Client certificate validation failed", "hostname", hostname)
-					return status.Errorf(codes.Unauthenticated, "invalid client certificate: %v", err)
-				}
-				log.V(2).Info("Client certificate validated successfully", "hostname", hostname)
-			}
+			// Note: Client certificate validation removed - using token-only authentication
 
 			// Validate token against Kubernetes (always required)
 			if err := s.validateTunnelToken(stream.Context(), hostname, auth.Token); err != nil {
@@ -346,103 +329,4 @@ func (s *ServiceServer) validateTunnelToken(ctx context.Context, hostname, provi
 	}
 
 	return fmt.Errorf("no tunnel found for hostname: %s", hostname)
-}
-
-// extractClientCertificate extracts the client certificate from gRPC context
-func (s *ServiceServer) extractClientCertificate(ctx context.Context) (*x509.Certificate, error) {
-	// Get peer info from gRPC context
-	peer, ok := peer.FromContext(ctx)
-	if !ok {
-		return nil, fmt.Errorf("no peer information in context")
-	}
-
-	// Extract TLS info
-	tlsInfo, ok := peer.AuthInfo.(credentials.TLSInfo)
-	if !ok {
-		return nil, fmt.Errorf("no TLS information in peer context")
-	}
-
-	// Get client certificates
-	if len(tlsInfo.State.PeerCertificates) == 0 {
-		return nil, fmt.Errorf("no client certificates provided")
-	}
-
-	// Return the first (leaf) certificate
-	return tlsInfo.State.PeerCertificates[0], nil
-}
-
-// validateClientCertificate validates that the client certificate matches the tunnel
-func (s *ServiceServer) validateClientCertificate(cert *x509.Certificate, hostname string) error {
-	// Basic validation: certificate must not be expired
-	now := time.Now()
-	if now.Before(cert.NotBefore) || now.After(cert.NotAfter) {
-		return fmt.Errorf("certificate is expired or not yet valid")
-	}
-
-	// Extract tunnel information from certificate extensions
-	var tunnelName, tunnelNamespace string
-
-	// Look for custom extensions that contain tunnel identity
-	// OID 1.3.6.1.4.1.99999.1 = tunnel name
-	// OID 1.3.6.1.4.1.99999.2 = namespace
-	for _, ext := range cert.Extensions {
-		// Check for tunnel name extension
-		if ext.Id.Equal([]int{1, 3, 6, 1, 4, 1, 99999, 1}) {
-			tunnelName = string(ext.Value)
-		}
-		// Check for namespace extension
-		if ext.Id.Equal([]int{1, 3, 6, 1, 4, 1, 99999, 2}) {
-			tunnelNamespace = string(ext.Value)
-		}
-	}
-
-	// If extensions not found, fall back to parsing CN
-	if tunnelName == "" || tunnelNamespace == "" {
-		cn := cert.Subject.CommonName
-		if !strings.HasPrefix(cn, "tunnel-") {
-			return fmt.Errorf("certificate CN does not have tunnel- prefix: %s", cn)
-		}
-
-		// Parse the tunnel name from CN
-		// Format: tunnel-{tunnel-name}-{namespace}
-		parts := strings.Split(cn, "-")
-		if len(parts) < 3 {
-			return fmt.Errorf("invalid certificate CN format: %s", cn)
-		}
-
-		// Extract namespace (last part) and tunnel name (middle parts)
-		tunnelNamespace = parts[len(parts)-1]
-		tunnelName = strings.Join(parts[1:len(parts)-1], "-")
-	}
-
-	klog.V(4).Info("Client certificate validation",
-		"cn", cert.Subject.CommonName,
-		"tunnelName", tunnelName,
-		"tunnelNamespace", tunnelNamespace,
-		"requestedHostname", hostname)
-
-	// Validate that the certificate is for the correct tunnel by checking against Kubernetes
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	// Look up the tunnel resource
-	var tunnelList kubelbv1alpha1.TunnelList
-	if err := s.kubeClient.List(ctx, &tunnelList); err != nil {
-		return fmt.Errorf("failed to list tunnels for certificate validation: %w", err)
-	}
-
-	// Find tunnel that matches the certificate
-	for _, tunnel := range tunnelList.Items {
-		if tunnel.Name == tunnelName && tunnel.Namespace == tunnelNamespace {
-			// Verify this tunnel's hostname matches the requested hostname
-			if tunnel.Status.Hostname != hostname {
-				return fmt.Errorf("certificate is for tunnel %s/%s with hostname %s, but request is for hostname %s",
-					tunnelNamespace, tunnelName, tunnel.Status.Hostname, hostname)
-			}
-			// Certificate is valid for this tunnel
-			return nil
-		}
-	}
-
-	return fmt.Errorf("no tunnel found matching certificate: %s/%s", tunnelNamespace, tunnelName)
 }
