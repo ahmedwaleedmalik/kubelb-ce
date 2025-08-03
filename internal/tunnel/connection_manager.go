@@ -18,14 +18,18 @@ package tunnel
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 
 	pb "k8c.io/kubelb/proto/tunnel"
@@ -124,10 +128,17 @@ func (cm *ConnectionManager) startGRPCServer(ctx context.Context) error {
 		grpc.MaxSendMsgSize(64 * 1024 * 1024), // 64MB max send message size
 	}
 
-	// No TLS configuration - using plain gRPC with token authentication
-
-	// Create gRPC server
-	cm.grpcServer = grpc.NewServer(opts...)
+	// Configure TLS with client certificate requirement if certificates are available
+	tlsConfig, err := cm.createTLSConfig(ctx)
+	if err != nil {
+		log.V(2).Info("TLS certificates not available, using plain gRPC", "error", err)
+		// Create gRPC server without TLS
+		cm.grpcServer = grpc.NewServer(opts...)
+	} else {
+		log.Info("Enabling mTLS for gRPC server")
+		opts = append(opts, grpc.Creds(credentials.NewTLS(tlsConfig)))
+		cm.grpcServer = grpc.NewServer(opts...)
+	}
 
 	// Register tunnel service with generated registration
 	pb.RegisterTunnelServiceServer(cm.grpcServer, cm.tunnelService)
@@ -354,4 +365,80 @@ func (cm *ConnectionManager) GetTunnelService() *ServiceServer {
 // GetRegistry returns the tunnel registry for testing
 func (cm *ConnectionManager) GetRegistry() *Registry {
 	return cm.registry
+}
+
+// createTLSConfig creates TLS configuration for mTLS
+func (cm *ConnectionManager) createTLSConfig(_ context.Context) (*tls.Config, error) {
+	// Load server certificate from mounted secret
+	serverCert, err := cm.loadServerCertificate()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load server certificate: %w", err)
+	}
+	
+	// Load CA certificate for client validation
+	caCertPool, err := cm.loadCACertPool()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load CA certificate: %w", err)
+	}
+	
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{serverCert},
+		ClientAuth:   tls.RequireAndVerifyClientCert, // Require and verify client certificates
+		MinVersion:   tls.VersionTLS12,
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+		},
+		ClientCAs: caCertPool,
+	}
+	
+	return tlsConfig, nil
+}
+
+// loadServerCertificate loads the server certificate from mounted secret
+func (cm *ConnectionManager) loadServerCertificate() (tls.Certificate, error) {
+	certPath := "/etc/certs/tls.crt"
+	keyPath := "/etc/certs/tls.key"
+	
+	// Check if certificate files exist
+	if _, err := os.Stat(certPath); os.IsNotExist(err) {
+		return tls.Certificate{}, fmt.Errorf("server certificate not found at %s", certPath)
+	}
+	if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+		return tls.Certificate{}, fmt.Errorf("server private key not found at %s", keyPath)
+	}
+	
+	// Load certificate and private key
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("failed to load server certificate: %w", err)
+	}
+	
+	return cert, nil
+}
+
+// loadCACertPool loads the CA certificate pool for client validation
+func (cm *ConnectionManager) loadCACertPool() (*x509.CertPool, error) {
+	caPath := "/etc/certs/ca.crt"
+	
+	// Check if CA certificate file exists
+	if _, err := os.Stat(caPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("CA certificate not found at %s", caPath)
+	}
+	
+	// Read CA certificate
+	caCert, err := os.ReadFile(caPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read CA certificate: %w", err)
+	}
+	
+	// Create certificate pool and add CA
+	caCertPool := x509.NewCertPool()
+	if !caCertPool.AppendCertsFromPEM(caCert) {
+		return nil, fmt.Errorf("failed to parse CA certificate")
+	}
+	
+	return caCertPool, nil
 }

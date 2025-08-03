@@ -29,7 +29,7 @@ spec:
         pathType: {{ .pathType }}
         backend:
           service:
-            name: {{ include "kubelb-manager.fullname" $ }}-connection-manager
+            name: tunnel-connection-manager
             port:
               number: {{ $.Values.kubelb.tunnel.connectionManager.service.grpcPort }}
       {{- end }}

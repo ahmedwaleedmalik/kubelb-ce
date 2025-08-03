@@ -19,7 +19,7 @@ kubelb:
     # -- Topology defines the deployment topology for Envoy Proxy. Valid values are: shared and global.
     topology: shared
     # -- The number of replicas for the Envoy Proxy deployment.
-    replicas: 3
+    replicas: 2
     # -- Deploy single pod per node.
     singlePodPerNode: true
     # -- Use DaemonSet for Envoy Proxy deployment instead of Deployment.
@@ -43,27 +43,43 @@ kubelb:
       # -- Connection manager image configuration
       image:
         repository: quay.io/kubermatic/kubelb-connection-manager
-        tag: "latest"
+        tag: ""  # Defaults to global image.tag
         pullPolicy: IfNotPresent
       # -- Ingress configuration for external gRPC access
       ingress:
         enabled: false
-        className: ""
+        className: "nginx"
         annotations:
-          {}
-          # nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
-          # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+          nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+          external-dns.alpha.kubernetes.io/hostname: connection-manager.${DOMAIN}
         hosts:
-          - host: tunnel.example.com
+          - host: connection-manager.${DOMAIN}
             paths:
               - path: /tunnel.TunnelService
-                # Note: pathType must be ImplementationSpecific for gRPC paths
                 pathType: ImplementationSpecific
         tls:
-          []
-          # - secretName: tunnel-tls
-          #   hosts:
-          #     - tunnel.example.com
+          - secretName: connection-manager-tls
+            hosts:
+              - connection-manager.${DOMAIN}
+      # -- HTTPRoute configuration for external gRPC access (Gateway API)
+      httpRoute:
+        enabled: false
+        # -- Domain for the HTTPRoute
+        domain: "connection-manager.${DOMAIN}"
+        # -- Gateway name to attach to
+        gatewayName: "gateway"
+        # -- Gateway namespace
+        gatewayNamespace: ""
+        # -- Annotations for HTTPRoute
+        annotations:
+          external-dns.alpha.kubernetes.io/hostname: connection-manager.${DOMAIN}
+      # -- TLS configuration for mTLS
+      tls:
+        enabled: false
+        # -- Domain for the server certificate
+        domain: "connection-manager.${DOMAIN}"
+        # -- Certificate issuer name
+        issuer: "letsencrypt-prod"
       # -- Server addresses
       grpcAddr: ":9090"
       httpAddr: ":8080"

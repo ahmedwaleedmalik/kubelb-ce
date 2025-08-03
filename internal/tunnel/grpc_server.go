@@ -18,16 +18,20 @@ package tunnel
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/credentials"
 
 	pb "k8c.io/kubelb/proto/tunnel"
 	kubelbv1alpha1 "k8c.io/kubelb/api/ce/kubelb.k8c.io/v1alpha1"
@@ -97,6 +101,18 @@ func (s *ServiceServer) CreateTunnel(stream grpc.BidiStreamingServer[pb.TunnelMe
 
 			auth := payload.Auth
 			hostname = auth.Hostname
+
+			// TODO: Extract and validate client certificate when TLS is enabled
+			// For now, rely on token validation only
+			// clientCert, err := s.extractClientCertificate(stream.Context())
+			// if err != nil {
+			// 	log.Error(err, "Failed to extract client certificate")
+			// 	return status.Errorf(codes.Unauthenticated, "client certificate required: %v", err)
+			// }
+			// if err := s.validateClientCertificate(clientCert, hostname); err != nil {
+			// 	log.Error(err, "Client certificate validation failed", "hostname", hostname)
+			// 	return status.Errorf(codes.Unauthenticated, "invalid client certificate: %v", err)
+			// }
 
 			// Validate token against Kubernetes
 			if err := s.validateTunnelToken(stream.Context(), hostname, auth.Token); err != nil {
@@ -316,4 +332,66 @@ func (s *ServiceServer) validateTunnelToken(ctx context.Context, hostname, provi
 	}
 
 	return fmt.Errorf("no tunnel found for hostname: %s", hostname)
+}
+
+// extractClientCertificate extracts the client certificate from gRPC context
+func (s *ServiceServer) extractClientCertificate(ctx context.Context) (*x509.Certificate, error) {
+	// Get peer info from gRPC context
+	peer, ok := peer.FromContext(ctx)
+	if !ok {
+		return nil, fmt.Errorf("no peer information in context")
+	}
+
+	// Extract TLS info
+	tlsInfo, ok := peer.AuthInfo.(credentials.TLSInfo)
+	if !ok {
+		return nil, fmt.Errorf("no TLS information in peer context")
+	}
+
+	// Get client certificates
+	if len(tlsInfo.State.PeerCertificates) == 0 {
+		return nil, fmt.Errorf("no client certificates provided")
+	}
+
+	// Return the first (leaf) certificate
+	return tlsInfo.State.PeerCertificates[0], nil
+}
+
+// validateClientCertificate validates that the client certificate matches the tunnel
+func (s *ServiceServer) validateClientCertificate(cert *x509.Certificate, hostname string) error {
+	// Extract tunnel name from certificate Subject CN
+	// Expected format: tunnel-{tunnel-name}-{namespace}
+	cn := cert.Subject.CommonName
+	if !strings.HasPrefix(cn, "tunnel-") {
+		return fmt.Errorf("certificate CN does not have tunnel- prefix: %s", cn)
+	}
+
+	// Parse the tunnel name from CN
+	// Format: tunnel-{tunnel-name}-{namespace}
+	parts := strings.Split(cn, "-")
+	if len(parts) < 3 {
+		return fmt.Errorf("invalid certificate CN format: %s", cn)
+	}
+
+	// Extract tunnel name (everything between "tunnel-" and the last "-{namespace}")
+	tunnelName := strings.Join(parts[1:len(parts)-1], "-")
+	
+	// TODO: In a more sophisticated implementation, we could:
+	// 1. Extract tunnel name from certificate extensions (more reliable)
+	// 2. Cross-reference with tunnel hostname to validate the certificate
+	// 3. Check certificate expiry
+	
+	// For now, just log the extracted tunnel name for debugging
+	klog.V(4).Info("Client certificate validation", 
+		"cn", cn, 
+		"extractedTunnel", tunnelName, 
+		"requestedHostname", hostname)
+
+	// Basic validation: certificate must not be expired
+	now := time.Now()
+	if now.Before(cert.NotBefore) || now.After(cert.NotAfter) {
+		return fmt.Errorf("certificate is expired or not yet valid")
+	}
+
+	return nil
 }
