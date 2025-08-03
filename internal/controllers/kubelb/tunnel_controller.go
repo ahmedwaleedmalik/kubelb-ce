@@ -20,12 +20,15 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net"
+	"net/http"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -129,7 +132,7 @@ func (r *TunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 	}
 
-	err = r.reconcile(ctx, log, tunnel, config, tenant)
+	result, err := r.reconcile(ctx, log, tunnel, config, tenant)
 	if err != nil {
 		log.Error(err, "reconciling failed")
 		if statusErr := r.updateStatus(ctx, tunnel, kubelbv1alpha1.TunnelPhaseFailed, err.Error()); statusErr != nil {
@@ -138,22 +141,22 @@ func (r *TunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		r.Recorder.Eventf(tunnel, corev1.EventTypeWarning, "ReconcileFailed", "Failed to reconcile tunnel: %v", err)
 	}
 
-	return reconcile.Result{}, err
+	return result, err
 }
 
-func (r *TunnelReconciler) reconcile(ctx context.Context, log logr.Logger, tunnelObj *kubelbv1alpha1.Tunnel, config *kubelbv1alpha1.Config, tenant *kubelbv1alpha1.Tenant) error {
+func (r *TunnelReconciler) reconcile(ctx context.Context, log logr.Logger, tunnelObj *kubelbv1alpha1.Tunnel, config *kubelbv1alpha1.Config, tenant *kubelbv1alpha1.Tenant) (ctrl.Result, error) {
 	log.V(1).Info("Starting reconciliation")
 
 	// Update status to pending if not already set
 	if tunnelObj.Status.Phase == "" {
 		if err := r.updateStatus(ctx, tunnelObj, kubelbv1alpha1.TunnelPhasePending, "Provisioning tunnel"); err != nil {
-			return fmt.Errorf("failed to update status: %w", err)
+			return ctrl.Result{}, fmt.Errorf("failed to update status: %w", err)
 		}
 	}
 
 	// Create or update SyncSecret with certificate and token
 	if err := r.ensureTunnelAuth(ctx, log, tunnelObj); err != nil {
-		return fmt.Errorf("failed to ensure tunnel authentication: %w", err)
+		return ctrl.Result{}, fmt.Errorf("failed to ensure tunnel authentication: %w", err)
 	}
 
 	// Get annotations from tenant and config
@@ -163,7 +166,7 @@ func (r *TunnelReconciler) reconcile(ctx context.Context, log logr.Logger, tunne
 	tunnelReconciler := tunnel.NewReconciler(r.Client, r.Scheme, r.Recorder, r.DisableGatewayAPI)
 	hostname, routeRef, err := tunnelReconciler.Reconcile(ctx, log, tunnelObj, config, tenant, annotations)
 	if err != nil {
-		return fmt.Errorf("failed to reconcile tunnel: %w", err)
+		return ctrl.Result{}, fmt.Errorf("failed to reconcile tunnel: %w", err)
 	}
 
 	// Update status with the results
@@ -175,13 +178,23 @@ func (r *TunnelReconciler) reconcile(ctx context.Context, log logr.Logger, tunne
 	tunnelObj.Status.Resources.ServerTLSSecretName = fmt.Sprintf("%s-server-tls", tunnelObj.Name)
 	tunnelObj.Status.Resources.ClientTLSSecretName = fmt.Sprintf("%s-client-tls", tunnelObj.Name)
 
-	if err := r.updateStatus(ctx, tunnelObj, kubelbv1alpha1.TunnelPhaseReady, "Tunnel is ready"); err != nil {
-		return fmt.Errorf("failed to update status: %w", err)
+	// Perform health checks before marking as ready
+	dnsReady, endpointReady, tlsReady := r.updateHealthConditions(log, tunnelObj)
+
+	// If health checks fail, requeue to try again in 5 seconds
+	if !dnsReady || !endpointReady || !tlsReady {
+		log.V(1).Info("Health checks not ready, requeuing", "dnsReady", dnsReady, "endpointReady", endpointReady, "tlsReady", tlsReady)
+		if err := r.updateStatus(ctx, tunnelObj, kubelbv1alpha1.TunnelPhasePending, "Waiting for DNS, endpoint, and TLS to be ready"); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to update status: %w", err)
+		}
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil // Requeue after 5 seconds
 	}
 
+	if err := r.updateStatus(ctx, tunnelObj, kubelbv1alpha1.TunnelPhaseReady, "Tunnel is ready"); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to update status: %w", err)
+	}
 	r.Recorder.Eventf(tunnelObj, corev1.EventTypeNormal, "TunnelReady", "Tunnel is ready at %s", tunnelObj.Status.URL)
-
-	return nil
+	return ctrl.Result{}, nil
 }
 
 func (r *TunnelReconciler) cleanup(ctx context.Context, log logr.Logger, tunnelObj *kubelbv1alpha1.Tunnel) (ctrl.Result, error) {
@@ -212,6 +225,11 @@ func (r *TunnelReconciler) cleanup(ctx context.Context, log logr.Logger, tunnelO
 func (r *TunnelReconciler) updateStatus(ctx context.Context, tunnel *kubelbv1alpha1.Tunnel, phase kubelbv1alpha1.TunnelPhase, message string) error {
 	tunnel.Status.Phase = phase
 
+	// Set all existing conditions to False first
+	for i := range tunnel.Status.Conditions {
+		tunnel.Status.Conditions[i].Status = metav1.ConditionFalse
+	}
+
 	// Update conditions
 	condition := metav1.Condition{
 		Type:               string(phase),
@@ -241,15 +259,15 @@ func (r *TunnelReconciler) updateStatus(ctx context.Context, tunnel *kubelbv1alp
 func generateToken() (string, error) {
 	// Create a byte slice to hold the random data
 	tokenBytes := make([]byte, TokenLength)
-	
+
 	// Read random bytes
 	if _, err := rand.Read(tokenBytes); err != nil {
 		return "", fmt.Errorf("failed to generate random token: %w", err)
 	}
-	
+
 	// Encode to base64 for a URL-safe string
 	token := base64.URLEncoding.EncodeToString(tokenBytes)
-	
+
 	return token, nil
 }
 
@@ -267,10 +285,10 @@ func generateTunnelCertificate(tunnelName, namespace string, validityDays int, c
 		Subject: pkix.Name{
 			CommonName: fmt.Sprintf("tunnel-%s-%s", tunnelName, namespace),
 		},
-		NotBefore:    time.Now(),
-		NotAfter:     time.Now().Add(time.Duration(validityDays) * 24 * time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(time.Duration(validityDays) * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
 	}
 
@@ -327,9 +345,9 @@ func generateCACertificate() (*x509.Certificate, *rsa.PrivateKey, error) {
 	template := x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject: pkix.Name{
-			CommonName:    "KubeLB Tunnel CA",
-			Organization:  []string{"KubeLB"},
-			Country:       []string{"US"},
+			CommonName:   "KubeLB Tunnel CA",
+			Organization: []string{"KubeLB"},
+			Country:      []string{"US"},
 		},
 		NotBefore:             time.Now(),
 		NotAfter:              time.Now().Add(365 * 24 * time.Hour), // 1 year
@@ -356,21 +374,21 @@ func generateCACertificate() (*x509.Certificate, *rsa.PrivateKey, error) {
 // ensureTunnelAuth creates or updates the SyncSecret with certificate and token for the tunnel
 func (r *TunnelReconciler) ensureTunnelAuth(ctx context.Context, log logr.Logger, tunnel *kubelbv1alpha1.Tunnel) error {
 	syncSecretName := fmt.Sprintf("tunnel-auth-%s", tunnel.Name)
-	
+
 	// Check if SyncSecret already exists
 	existingSyncSecret := &kubelbv1alpha1.SyncSecret{}
 	err := r.Get(ctx, ctrlruntimeclient.ObjectKey{
 		Namespace: tunnel.Namespace,
 		Name:      syncSecretName,
 	}, existingSyncSecret)
-	
+
 	if err != nil && !kerrors.IsNotFound(err) {
 		return fmt.Errorf("failed to get existing SyncSecret: %w", err)
 	}
-	
+
 	var needsUpdate bool
 	var syncSecret *kubelbv1alpha1.SyncSecret
-	
+
 	if kerrors.IsNotFound(err) {
 		// Create new SyncSecret
 		syncSecret = &kubelbv1alpha1.SyncSecret{
@@ -390,12 +408,12 @@ func (r *TunnelReconciler) ensureTunnelAuth(ctx context.Context, log logr.Logger
 		syncSecret = existingSyncSecret
 		log.V(2).Info("Using existing SyncSecret for tunnel")
 	}
-	
+
 	// Set owner reference
 	if err := controllerutil.SetControllerReference(tunnel, syncSecret, r.Scheme); err != nil {
 		return fmt.Errorf("failed to set owner reference: %w", err)
 	}
-	
+
 	// Check if certificate needs generation/renewal
 	if needsUpdate || r.needsCertificateRenewal(syncSecret) {
 		if err := r.generateAndStoreCertificate(syncSecret, tunnel); err != nil {
@@ -404,7 +422,7 @@ func (r *TunnelReconciler) ensureTunnelAuth(ctx context.Context, log logr.Logger
 		needsUpdate = true
 		log.V(2).Info("Generated new certificate for tunnel")
 	}
-	
+
 	// Check if token needs generation/renewal
 	if needsUpdate || r.needsTokenRenewal(syncSecret) {
 		if err := r.generateAndStoreToken(syncSecret); err != nil {
@@ -413,7 +431,7 @@ func (r *TunnelReconciler) ensureTunnelAuth(ctx context.Context, log logr.Logger
 		needsUpdate = true
 		log.V(2).Info("Generated new token for tunnel")
 	}
-	
+
 	// Create or update the SyncSecret
 	if kerrors.IsNotFound(err) {
 		if err := r.Create(ctx, syncSecret); err != nil {
@@ -426,7 +444,7 @@ func (r *TunnelReconciler) ensureTunnelAuth(ctx context.Context, log logr.Logger
 		}
 		log.Info("Updated SyncSecret for tunnel", "syncSecret", syncSecretName)
 	}
-	
+
 	return nil
 }
 
@@ -437,28 +455,28 @@ func (r *TunnelReconciler) generateAndStoreCertificate(syncSecret *kubelbv1alpha
 	if err != nil {
 		return fmt.Errorf("failed to get CA certificate: %w", err)
 	}
-	
+
 	// Generate client certificate (30 days validity)
 	certPEM, keyPEM, err := generateTunnelCertificate(tunnel.Name, tunnel.Namespace, 30, caCert, caKey)
 	if err != nil {
 		return fmt.Errorf("failed to generate tunnel certificate: %w", err)
 	}
-	
+
 	// Encode CA certificate to PEM
 	caCertPEM := pem.EncodeToMemory(&pem.Block{
 		Type:  "CERTIFICATE",
 		Bytes: caCert.Raw,
 	})
-	
+
 	// Store in SyncSecret
 	syncSecret.Data["tls.crt"] = certPEM
 	syncSecret.Data["tls.key"] = keyPEM
 	syncSecret.Data["ca.crt"] = caCertPEM
-	
+
 	// Store certificate expiry for renewal tracking
 	certExpiry := time.Now().Add(30 * 24 * time.Hour)
 	syncSecret.Data["certExpiry"] = []byte(certExpiry.Format(time.RFC3339))
-	
+
 	return nil
 }
 
@@ -469,14 +487,14 @@ func (r *TunnelReconciler) generateAndStoreToken(syncSecret *kubelbv1alpha1.Sync
 	if err != nil {
 		return fmt.Errorf("failed to generate token: %w", err)
 	}
-	
+
 	// Store in SyncSecret
 	syncSecret.Data["token"] = []byte(token)
-	
+
 	// Store token expiry for renewal tracking
 	tokenExpiry := time.Now().Add(24 * time.Hour)
 	syncSecret.Data["tokenExpiry"] = []byte(tokenExpiry.Format(time.RFC3339))
-	
+
 	return nil
 }
 
@@ -486,12 +504,12 @@ func (r *TunnelReconciler) needsCertificateRenewal(syncSecret *kubelbv1alpha1.Sy
 	if !exists {
 		return true // No expiry data, needs renewal
 	}
-	
+
 	expiry, err := time.Parse(time.RFC3339, string(expiryData))
 	if err != nil {
 		return true // Invalid expiry data, needs renewal
 	}
-	
+
 	// Renew 7 days before expiry
 	return time.Until(expiry) < 7*24*time.Hour
 }
@@ -502,14 +520,141 @@ func (r *TunnelReconciler) needsTokenRenewal(syncSecret *kubelbv1alpha1.SyncSecr
 	if !exists {
 		return true // No expiry data, needs renewal
 	}
-	
+
 	expiry, err := time.Parse(time.RFC3339, string(expiryData))
 	if err != nil {
 		return true // Invalid expiry data, needs renewal
 	}
-	
+
 	// Renew 1 hour before expiry
 	return time.Until(expiry) < 1*time.Hour
+}
+
+// updateHealthConditions performs DNS, endpoint, and TLS health checks and updates conditions
+func (r *TunnelReconciler) updateHealthConditions(log logr.Logger, tunnel *kubelbv1alpha1.Tunnel) (bool, bool, bool) {
+	if tunnel.Status.Hostname == "" {
+		return false, false, false
+	}
+
+	// Check DNS resolution
+	dnsReady := r.checkDNSResolution(tunnel.Status.Hostname)
+	r.updateCondition(tunnel, "DNSReady", dnsReady, "DNS resolution check")
+
+	// Check endpoint health
+	endpointReady := r.checkEndpointHealth(tunnel.Status.URL)
+	r.updateCondition(tunnel, "EndpointReady", endpointReady, "Endpoint health check")
+
+	// Check TLS health
+	tlsReady := r.checkTLSHealth(tunnel.Status.URL)
+	r.updateCondition(tunnel, "TLSReady", tlsReady, "TLS certificate check")
+
+	log.V(1).Info("Updated health conditions", "dnsReady", dnsReady, "endpointReady", endpointReady, "tlsReady", tlsReady)
+	return dnsReady, endpointReady, tlsReady
+}
+
+// checkDNSResolution checks if the hostname resolves to an IP address
+func (r *TunnelReconciler) checkDNSResolution(hostname string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := net.DefaultResolver.LookupIPAddr(ctx, hostname)
+	return err == nil
+}
+
+// checkEndpointHealth checks if the tunnel endpoint is responding
+func (r *TunnelReconciler) checkEndpointHealth(url string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Create HTTP client with timeout and TLS config
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true, // Skip cert verification for health check
+			},
+		},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return false
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	// Consider any response (even 404) as healthy since it means the endpoint is responding
+	return resp.StatusCode < 600
+}
+
+// checkTLSHealth checks if the TLS endpoint has a valid certificate and TLS connection works
+func (r *TunnelReconciler) checkTLSHealth(url string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Create HTTP client with timeout but NO TLS verification skip - we want to verify the cert
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: false, // Verify TLS certificate for this check
+			},
+		},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return false
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		// TLS errors (cert validation failure, handshake issues, etc.) will cause this to fail
+		return false
+	}
+	defer resp.Body.Close()
+
+	// If we get here, TLS handshake succeeded and certificate is valid
+	// Any HTTP response code means TLS is working
+	return true
+}
+
+// updateCondition updates a specific condition in the tunnel status
+func (r *TunnelReconciler) updateCondition(tunnel *kubelbv1alpha1.Tunnel, conditionType string, status bool, message string) {
+	conditionStatus := metav1.ConditionFalse
+	reason := "Failed"
+	if status {
+		conditionStatus = metav1.ConditionTrue
+		reason = "Ready"
+	}
+
+	condition := metav1.Condition{
+		Type:               conditionType,
+		Status:             conditionStatus,
+		LastTransitionTime: metav1.Now(),
+		Reason:             reason,
+		Message:            message,
+	}
+
+	// Replace or add the condition
+	found := false
+	for i, c := range tunnel.Status.Conditions {
+		if c.Type == condition.Type {
+			// Only update if status changed to avoid unnecessary updates
+			if c.Status != condition.Status {
+				tunnel.Status.Conditions[i] = condition
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		tunnel.Status.Conditions = append(tunnel.Status.Conditions, condition)
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
