@@ -177,7 +177,19 @@ func (r *TunnelReconciler) reconcile(ctx context.Context, log logr.Logger, tunne
 
 	// Only update status if routeRef actually changed
 	if !equality.Semantic.DeepEqual(oldRouteRef, routeRef) {
-		if err := r.Status().Update(ctx, tunnelObj); err != nil {
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			// Re-fetch the latest version of the tunnel before updating
+			latestTunnel := &kubelbv1alpha1.Tunnel{}
+			if err := r.Get(ctx, ctrlruntimeclient.ObjectKey{Name: tunnelObj.Name, Namespace: tunnelObj.Namespace}, latestTunnel); err != nil {
+				return err
+			}
+
+			// Apply our changes to the latest version
+			latestTunnel.Status.Resources.RouteRef = routeRef
+
+			return r.Status().Update(ctx, latestTunnel)
+		})
+		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to update tunnel status: %w", err)
 		}
 	}

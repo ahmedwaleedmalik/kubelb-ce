@@ -119,7 +119,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, log logr.Logger, tunnel *kub
 			if err := r.client.Get(ctx, ctrlruntimeclient.ObjectKey{Name: tunnel.Name, Namespace: tunnel.Namespace}, latestTunnel); err != nil {
 				return err
 			}
-			
+
 			// Apply our changes to the latest version
 			latestTunnel.Status.Hostname = tunnel.Status.Hostname
 			latestTunnel.Status.URL = tunnel.Status.URL
@@ -127,7 +127,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, log logr.Logger, tunnel *kub
 			latestTunnel.Status.Resources.ServiceName = tunnel.Status.Resources.ServiceName
 			latestTunnel.Status.Resources.ServerTLSSecretName = tunnel.Status.Resources.ServerTLSSecretName
 			latestTunnel.Status.Resources.ClientTLSSecretName = tunnel.Status.Resources.ClientTLSSecretName
-			
+
 			return r.client.Status().Update(ctx, latestTunnel)
 		})
 		if err != nil {
