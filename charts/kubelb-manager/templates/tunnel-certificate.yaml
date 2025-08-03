@@ -15,11 +15,6 @@ spec:
   commonName: {{ .Values.kubelb.tunnel.connectionManager.tls.domain }}
   dnsNames:
     - {{ .Values.kubelb.tunnel.connectionManager.tls.domain }}
-    - connection-manager.{{ .Release.Namespace }}
-    - connection-manager.{{ .Release.Namespace }}.svc.cluster.local
-    - localhost
-  ipAddresses:
-    - 127.0.0.1
   duration: 720h    # 30 days
   renewBefore: 240h # 10 days
   usages:

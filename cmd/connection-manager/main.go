@@ -39,6 +39,10 @@ func main() {
 		grpcAddr       = flag.String("grpc-addr", ":9090", "gRPC server address for tunnel connections")
 		httpAddr       = flag.String("http-addr", ":8080", "HTTP server address for Envoy requests")
 		requestTimeout = flag.Duration("request-timeout", 30*time.Second, "Timeout for forwarded requests")
+		tlsCertFile    = flag.String("tls-cert-file", "", "TLS certificate file path")
+		tlsKeyFile     = flag.String("tls-key-file", "", "TLS private key file path")
+		caCertFile     = flag.String("ca-cert-file", "", "CA certificate file path for client certificate validation")
+		enableMTLS     = flag.Bool("enable-mtls", false, "Enable mutual TLS authentication")
 	)
 
 	klog.InitFlags(nil)
@@ -63,12 +67,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create simplified configuration - no TLS, token-based authentication only
+	// Create configuration with TLS support
 	config := &tunnel.ConnectionManagerConfig{
 		GRPCAddr:       *grpcAddr,
 		HTTPAddr:       *httpAddr,
 		RequestTimeout: *requestTimeout,
 		KubeClient:     kubeClient,
+		TLSCertFile:    *tlsCertFile,
+		TLSKeyFile:     *tlsKeyFile,
+		CACertFile:     *caCertFile,
+		EnableMTLS:     *enableMTLS,
 	}
 
 	// Create connection manager

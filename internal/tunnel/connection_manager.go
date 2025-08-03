@@ -61,6 +61,11 @@ type ConnectionManagerConfig struct {
 	HTTPAddr       string
 	RequestTimeout time.Duration
 	KubeClient     ctrlruntimeclient.Client
+	// TLS configuration
+	TLSCertFile    string
+	TLSKeyFile     string
+	CACertFile     string
+	EnableMTLS     bool
 }
 
 // NewConnectionManager creates a new connection manager
