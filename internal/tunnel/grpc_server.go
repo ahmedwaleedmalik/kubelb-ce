@@ -28,9 +28,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"k8s.io/klog/v2"
 
 	pb "k8c.io/kubelb/proto/tunnel"
+
+	"k8s.io/klog/v2"
 )
 
 // Default timeout for forwarded requests

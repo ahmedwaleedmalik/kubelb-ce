@@ -375,14 +375,14 @@ func (r *Reconciler) createOrUpdateHTTPRoute(ctx context.Context, tunnel *kubelb
 		var parentGateway gwapiv1.ParentReference
 		if tenant.Spec.GatewayAPI.DefaultGateway != nil {
 			parentGateway = gwapiv1.ParentReference{
-				Name:      gwapiv1.ObjectName(tenant.Spec.GatewayAPI.DefaultGateway.Name),
+				Name: gwapiv1.ObjectName(tenant.Spec.GatewayAPI.DefaultGateway.Name),
 			}
 			if tenant.Spec.GatewayAPI.DefaultGateway.Namespace != "" {
 				parentGateway.Namespace = ptr.To(gwapiv1.Namespace(tenant.Spec.GatewayAPI.DefaultGateway.Namespace))
 			}
 		} else if config.Spec.GatewayAPI.DefaultGateway != nil {
 			parentGateway = gwapiv1.ParentReference{
-				Name:      gwapiv1.ObjectName(config.Spec.GatewayAPI.DefaultGateway.Name),
+				Name: gwapiv1.ObjectName(config.Spec.GatewayAPI.DefaultGateway.Name),
 			}
 			if config.Spec.GatewayAPI.DefaultGateway.Namespace != "" {
 				parentGateway.Namespace = ptr.To(gwapiv1.Namespace(config.Spec.GatewayAPI.DefaultGateway.Namespace))

@@ -28,6 +28,7 @@ import (
 	envoyListener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	envoyRoute "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	envoyFileAccessLog "github.com/envoyproxy/go-control-plane/envoy/extensions/access_loggers/file/v3"
+	envoy_filter_http_router_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/router/v3"
 	envoyHttpManager "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	envoyTcpProxy "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/tcp_proxy/v3"
 	envoyUdpProxy "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/udp/udp_proxy/v3"
@@ -36,6 +37,7 @@ import (
 	envoycache "github.com/envoyproxy/go-control-plane/pkg/cache/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/resource/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/wellknown"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -417,9 +419,6 @@ func makeHTTPListener(listenerName string, tunnels []kubelbv1alpha1.Tunnel, list
 		VirtualHosts: virtualHosts,
 	}
 
-	// Create router filter - using empty config since we just need the well-known name
-	routerAny := &anypb.Any{}
-
 	// Create access log configuration
 	accessLog := &envoyFileAccessLog.FileAccessLog{
 		Path: "/dev/stdout",
@@ -435,14 +434,12 @@ func makeHTTPListener(listenerName string, tunnels []kubelbv1alpha1.Tunnel, list
 		RouteSpecifier: &envoyHttpManager.HttpConnectionManager_RouteConfig{
 			RouteConfig: routeConfig,
 		},
-		HttpFilters: []*envoyHttpManager.HttpFilter{
-			{
-				Name: wellknown.Router,
-				ConfigType: &envoyHttpManager.HttpFilter_TypedConfig{
-					TypedConfig: routerAny,
-				},
+		HttpFilters: []*envoyHttpManager.HttpFilter{{
+			Name: wellknown.Router,
+			ConfigType: &envoyHttpManager.HttpFilter_TypedConfig{
+				TypedConfig: MustMarshalAny(&envoy_filter_http_router_v3.Router{}),
 			},
-		},
+		}},
 		AccessLog: []*envoyAccessLog.AccessLog{
 			{
 				Name: "envoy.access_loggers.file",
@@ -525,4 +522,13 @@ func makeTunnelCluster(clusterName string, kubelbNamespace string) *envoyCluster
 			HealthyPanicThreshold: &envoytypev3.Percent{Value: 0},
 		},
 	}
+}
+
+func MustMarshalAny(pb proto.Message) *anypb.Any {
+	a, err := anypb.New(pb)
+	if err != nil {
+		panic(err.Error())
+	}
+
+	return a
 }
