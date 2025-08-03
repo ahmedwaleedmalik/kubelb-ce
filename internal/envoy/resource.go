@@ -68,7 +68,7 @@ func MapSnapshot(ctx context.Context, client ctrlclient.Client, loadBalancers []
 	// Check if we need HTTP listeners for tunnel services
 	if len(tunnels) > 0 {
 		// Create HTTP listener for tunnel traffic
-		httpListener := makeHTTPListener("tunnel_http_listener", tunnels, 80)
+		httpListener := makeHTTPListener("tunnel_http_listener", tunnels, 8080)
 		listener = append(listener, httpListener)
 
 		// Create cluster for tunnel connection manager

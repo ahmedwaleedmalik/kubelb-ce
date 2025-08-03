@@ -271,13 +271,13 @@ func (r *Reconciler) ensureTunnelService(ctx context.Context, log logr.Logger, t
 				{
 					Name:       "http",
 					Port:       80,
-					TargetPort: intstr.FromInt(80),
+					TargetPort: intstr.FromInt(8080),
 					Protocol:   corev1.ProtocolTCP,
 				},
 				{
 					Name:       "https",
 					Port:       443,
-					TargetPort: intstr.FromInt(443),
+					TargetPort: intstr.FromInt(8443),
 					Protocol:   corev1.ProtocolTCP,
 				},
 			},
@@ -369,7 +369,7 @@ func (r *Reconciler) createOrUpdateIngress(ctx context.Context, tunnel *kubelbv1
 									Service: &networkingv1.IngressServiceBackend{
 										Name: serviceName,
 										Port: networkingv1.ServiceBackendPort{
-											Number: 443,
+											Number: 80,
 										},
 									},
 								},
@@ -463,7 +463,7 @@ func (r *Reconciler) createOrUpdateHTTPRoute(ctx context.Context, tunnel *kubelb
 						BackendRef: gwapiv1.BackendRef{
 							BackendObjectReference: gwapiv1.BackendObjectReference{
 								Name: gwapiv1.ObjectName(serviceName),
-								Port: ptr.To(gwapiv1.PortNumber(443)),
+								Port: ptr.To(gwapiv1.PortNumber(80)),
 							},
 						},
 					},
