@@ -53,21 +53,17 @@ spec:
           protocol: TCP
         {{- if .Values.kubelb.tunnel.connectionManager.healthCheck.enabled }}
         livenessProbe:
-          exec:
-            command:
-            - /bin/sh
-            - -c
-            - "grpc_health_probe -addr=:9090 || exit 1"
+          httpGet:
+            path: /health
+            port: http
           initialDelaySeconds: {{ .Values.kubelb.tunnel.connectionManager.healthCheck.livenessInitialDelay }}
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 3
         readinessProbe:
-          exec:
-            command:
-            - /bin/sh
-            - -c
-            - "grpc_health_probe -addr=:9090 || exit 1"
+          httpGet:
+            path: /health
+            port: http
           initialDelaySeconds: {{ .Values.kubelb.tunnel.connectionManager.healthCheck.readinessInitialDelay }}
           periodSeconds: 5
           timeoutSeconds: 3

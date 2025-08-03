@@ -59,7 +59,7 @@ const (
 	defaultHealthCheckNoTrafficIntervalSeconds = 5
 )
 
-func MapSnapshot(ctx context.Context, client ctrlclient.Client, loadBalancers []kubelbv1alpha1.LoadBalancer, routes []kubelbv1alpha1.Route, tunnels []kubelbv1alpha1.Tunnel, portAllocator *portlookup.PortAllocator, globalEnvoyProxyTopology bool) (*envoycache.Snapshot, error) {
+func MapSnapshot(ctx context.Context, client ctrlclient.Client, loadBalancers []kubelbv1alpha1.LoadBalancer, routes []kubelbv1alpha1.Route, tunnels []kubelbv1alpha1.Tunnel, portAllocator *portlookup.PortAllocator, globalEnvoyProxyTopology bool, kubelbNamespace string) (*envoycache.Snapshot, error) {
 	var listener []types.Resource
 	var cluster []types.Resource
 
@@ -70,7 +70,7 @@ func MapSnapshot(ctx context.Context, client ctrlclient.Client, loadBalancers []
 		listener = append(listener, httpListener)
 
 		// Create cluster for tunnel connection manager
-		tunnelCluster := makeTunnelCluster("tunnel-connection-manager")
+		tunnelCluster := makeTunnelCluster("tunnel-connection-manager", kubelbNamespace)
 		cluster = append(cluster, tunnelCluster)
 	}
 
@@ -487,10 +487,10 @@ func makeHTTPListener(listenerName string, tunnels []kubelbv1alpha1.Tunnel, list
 }
 
 // makeTunnelCluster creates a cluster for the tunnel connection manager
-func makeTunnelCluster(clusterName string) *envoyCluster.Cluster {
+func makeTunnelCluster(clusterName string, kubelbNamespace string) *envoyCluster.Cluster {
 	// Create endpoint for the tunnel connection manager service
 	// This will point to the connection manager HTTP service for Envoy traffic
-	endpoint := makeEndpoint("tunnel-connection-manager.kubelb.svc.cluster.local", 8080)
+	endpoint := makeEndpoint(fmt.Sprintf("tunnel-connection-manager.%s.svc.cluster.local", kubelbNamespace), 8080)
 
 	return &envoyCluster.Cluster{
 		Name:                 clusterName,

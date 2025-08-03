@@ -119,7 +119,7 @@ func (r *EnvoyCPReconciler) reconcile(ctx context.Context, req ctrl.Request) err
 
 func (r *EnvoyCPReconciler) updateCache(ctx context.Context, snapshotName string, lbs []kubelbv1alpha1.LoadBalancer, routes []kubelbv1alpha1.Route, tunnels []kubelbv1alpha1.Tunnel) error {
 	log := ctrl.LoggerFrom(ctx)
-	desiredSnapshot, err := envoycp.MapSnapshot(ctx, r.Client, lbs, routes, tunnels, r.PortAllocator, r.EnvoyProxyTopology == EnvoyProxyTopologyGlobal)
+	desiredSnapshot, err := envoycp.MapSnapshot(ctx, r.Client, lbs, routes, tunnels, r.PortAllocator, r.EnvoyProxyTopology == EnvoyProxyTopologyGlobal, r.Namespace)
 	if err != nil {
 		return err
 	}
