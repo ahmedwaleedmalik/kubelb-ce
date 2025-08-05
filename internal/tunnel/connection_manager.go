@@ -548,7 +548,6 @@ func (cm *ConnectionManager) handleTunnelRequest(w http.ResponseWriter, r *http.
 	// Create response channel
 	respChan := make(chan *HTTPResponse, 1)
 	cm.responseChannels.Store(requestID, respChan)
-	defer cm.responseChannels.Delete(requestID)
 
 	// Send request to tunnel with retry logic
 	startTime := time.Now()
@@ -559,6 +558,8 @@ func (cm *ConnectionManager) handleTunnelRequest(w http.ResponseWriter, r *http.
 		health.RecordRequest(false, time.Since(startTime))
 		log.Error(err, "Failed to send request to tunnel after retries")
 		http.Error(w, "Failed to forward request", http.StatusBadGateway)
+		// Clean up the response channel on error
+		cm.responseChannels.Delete(requestID)
 		return
 	}
 
@@ -574,6 +575,8 @@ func (cm *ConnectionManager) handleTunnelRequest(w http.ResponseWriter, r *http.
 		if err != nil {
 			log.Error(err, "Failed to decode response body")
 			http.Error(w, "Invalid response body", http.StatusInternalServerError)
+			// Clean up the response channel on error
+			cm.responseChannels.Delete(requestID)
 			return
 		}
 
@@ -592,22 +595,35 @@ func (cm *ConnectionManager) handleTunnelRequest(w http.ResponseWriter, r *http.
 			}
 		}
 
+		// Clean up the response channel after successful response
+		cm.responseChannels.Delete(requestID)
+
 	case <-time.After(cm.requestTimeout):
 		// Record timeout as failure
 		health.RecordRequest(false, time.Since(startTime))
 		log.Error(nil, "Request timeout", "requestID", requestID)
 		http.Error(w, "Request timeout", http.StatusGatewayTimeout)
 
+		// Clean up the response channel with a grace period for late responses
+		go func() {
+			time.Sleep(30 * time.Second) // Grace period
+			cm.responseChannels.Delete(requestID)
+		}()
+
 	case <-r.Context().Done():
 		// Don't record client cancellations as failures
 		log.V(4).Info("Request canceled by client", "requestID", requestID)
 		// Don't send error response for canceled requests
+		// Clean up the response channel
+		cm.responseChannels.Delete(requestID)
 
 	case <-conn.Context.Done():
 		// Record tunnel disconnection as failure
 		health.RecordRequest(false, time.Since(startTime))
 		log.Error(nil, "Tunnel disconnected during request", "requestID", requestID)
 		http.Error(w, "Tunnel disconnected", http.StatusBadGateway)
+		// Clean up the response channel
+		cm.responseChannels.Delete(requestID)
 	}
 }
 
